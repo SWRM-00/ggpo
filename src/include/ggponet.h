@@ -214,7 +214,7 @@ typedef struct {
     * begin_game callback - This callback has been deprecated.  You must
     * implement it, but should ignore the 'game' parameter.
     */
-   bool (__cdecl *begin_game)(const char *game);
+   bool (__cdecl *begin_game)(const char *game, void *usr);
 
    /*
     * save_game_state - The client should allocate a buffer, copy the
@@ -222,7 +222,7 @@ typedef struct {
     * length into the *len parameter.  Optionally, the client can compute
     * a checksum of the data and store it in the *checksum argument.
     */
-   bool (__cdecl *save_game_state)(unsigned char **buffer, int *len, int *checksum, int frame);
+   bool (__cdecl *save_game_state)(unsigned char **buffer, int *len, int *checksum, int frame, void *usr);
 
    /*
     * load_game_state - GGPO.net will call this function at the beginning
@@ -231,20 +231,20 @@ typedef struct {
     * should make the current game state match the state contained in the
     * buffer.
     */
-   bool (__cdecl *load_game_state)(unsigned char *buffer, int len);
+   bool (__cdecl *load_game_state)(unsigned char *buffer, int len, void *usr);
 
    /*
     * log_game_state - Used in diagnostic testing.  The client should use
     * the ggpo_log function to write the contents of the specified save
     * state in a human readible form.
     */
-   bool (__cdecl *log_game_state)(char *filename, unsigned char *buffer, int len);
+   bool (__cdecl *log_game_state)(char *filename, unsigned char *buffer, int len, void *usr);
 
    /*
     * free_buffer - Frees a game state allocated in save_game_state.  You
     * should deallocate the memory contained in the buffer.
     */
-   void (__cdecl *free_buffer)(void *buffer);
+   void (__cdecl *free_buffer)(void *buffer, void *usr);
 
    /*
     * advance_frame - Called during a rollback.  You should advance your game
@@ -255,13 +255,13 @@ typedef struct {
     *
     * The flags parameter is reserved.  It can safely be ignored at this time.
     */
-   bool (__cdecl *advance_frame)(int flags);
+   bool (__cdecl *advance_frame)(int flags, void *usr);
 
    /* 
     * on_event - Notification that something has happened.  See the GGPOEventCode
     * structure above for more information.
     */
-   bool (__cdecl *on_event)(GGPOEvent *info);
+   bool (__cdecl *on_event)(GGPOEvent *info, void *usr);
 } GGPOSessionCallbacks;
 
 /*
@@ -339,7 +339,8 @@ GGPO_API GGPOErrorCode __cdecl ggpo_start_session(GGPOSession **session,
                                                   const char *game,
                                                   int num_players,
                                                   int input_size,
-                                                  int localport);
+                                                  int localport,
+                                                  void *user);
 
 
 /*
@@ -387,7 +388,7 @@ GGPO_API GGPOErrorCode __cdecl ggpo_start_synctest(GGPOSession **session,
                                                    char *game,
                                                    int num_players,
                                                    int input_size,
-                                                   int frames);
+                                                   int frames, void *user);
 
 
 /*
@@ -421,7 +422,8 @@ GGPO_API GGPOErrorCode __cdecl ggpo_start_spectating(GGPOSession **session,
                                                      int input_size,
                                                      int local_port,
                                                      char *host_ip,
-                                                     int host_port);
+                                                     int host_port,
+                                                     void *user_data);
 
 /*
  * ggpo_close_session --

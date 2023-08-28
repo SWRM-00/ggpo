@@ -17,7 +17,7 @@
 
 class Peer2PeerBackend : public IQuarkBackend, IPollSink, Udp::Callbacks {
 public:
-   Peer2PeerBackend(GGPOSessionCallbacks *cb, const char *gamename, int localport, int num_players, int input_size);
+   Peer2PeerBackend(GGPOSessionCallbacks *cb, const char *gamename, int localport, int num_players, int input_size, void *user);
    virtual ~Peer2PeerBackend();
 
 
@@ -72,6 +72,7 @@ protected:
    int                   _disconnect_notify_start;
 
    UdpMsg::connect_status _local_connect_status[UDP_MSG_MAX_PLAYERS];
+   void                  *_user_data;
 };
 
 #endif

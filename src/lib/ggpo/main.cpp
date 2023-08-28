@@ -34,13 +34,15 @@ ggpo_start_session(GGPOSession **session,
                    const char *game,
                    int num_players,
                    int input_size,
-                   int localport)
+                   int localport,
+                   void *user)
 {
    *session= (GGPOSession *)new Peer2PeerBackend(cb,
                                                  game,
                                                  localport,
                                                  num_players,
-                                                 input_size);
+                                                 input_size, 
+                                                 user);
    return GGPO_OK;
 }
 
@@ -63,9 +65,10 @@ ggpo_start_synctest(GGPOSession **ggpo,
                     char *game,
                     int num_players,
                     int input_size,
-                    int frames)
+                    int frames, 
+                    void *user)
 {
-   *ggpo = (GGPOSession *)new SyncTestBackend(cb, game, frames, num_players);
+   *ggpo = (GGPOSession *)new SyncTestBackend(cb, game, frames, num_players, user);
    return GGPO_OK;
 }
 
@@ -187,7 +190,8 @@ GGPOErrorCode ggpo_start_spectating(GGPOSession **session,
                                     int input_size,
                                     int local_port,
                                     char *host_ip,
-                                    int host_port)
+                                    int host_port,
+                                    void *user)
 {
    *session= (GGPOSession *)new SpectatorBackend(cb,
                                                  game,
@@ -195,7 +199,7 @@ GGPOErrorCode ggpo_start_spectating(GGPOSession **session,
                                                  num_players,
                                                  input_size,
                                                  host_ip,
-                                                 host_port);
+                                                 host_port, user);
    return GGPO_OK;
 }
 

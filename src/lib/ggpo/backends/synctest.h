@@ -15,7 +15,7 @@
 
 class SyncTestBackend : public IQuarkBackend {
 public:
-   SyncTestBackend(GGPOSessionCallbacks *cb, char *gamename, int frames, int num_players);
+   SyncTestBackend(GGPOSessionCallbacks *cb, char *gamename, int frames, int num_players, void *user_data);
    virtual ~SyncTestBackend();
 
    virtual GGPOErrorCode DoPoll(int timeout);
@@ -53,6 +53,7 @@ protected:
    GameInput                  _current_input;
    GameInput                  _last_input;
    RingBuffer<SavedInfo, 32>  _saved_frames;
+   void                      *_user_data;
 };
 
 #endif

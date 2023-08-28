@@ -26,6 +26,7 @@ public:
       int                     num_prediction_frames;
       int                     num_players;
       int                     input_size;
+      void                   *user_data;
    };
    struct Event {
       enum {
@@ -88,6 +89,7 @@ protected:
    GGPOSessionCallbacks _callbacks;
    SavedState     _savedstate;
    Config         _config;
+   void          *_user_data;
 
    bool           _rollingback;
    int            _last_confirmed_frame;
