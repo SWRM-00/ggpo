@@ -9,14 +9,14 @@
 #define _UDP_PROTO_H_
 
 #include "poll.h"
-#include "udp.h"
-#include "udp_msg.h"
+#include "network.h"
+#include "network_msg.h"
 #include "game_input.h"
 #include "timesync.h"
 #include "ggponet.h"
 #include "ring_buffer.h"
 
-class UdpProtocol : public IPollSink
+class NetworkProtocol : public IPollSink
 {
 public:
    struct Stats {
@@ -24,7 +24,7 @@ public:
       int                 remote_frame_advantage;
       int                 local_frame_advantage;
       int                 send_queue_len;
-      Udp::Stats          udp;
+      Network::Stats      network;
    };
 
    struct Event {
@@ -60,24 +60,24 @@ public:
    virtual bool OnLoopPoll(void *cookie);
 
 public:
-   UdpProtocol();
-   virtual ~UdpProtocol();
+   NetworkProtocol();
+   virtual ~NetworkProtocol();
 
-   void Init(Udp *udp, Poll &p, int queue, char *ip, int port, UdpMsg::connect_status *status);
+   void Init(Network *network, Poll &p, int queue, GGPOConnectionPlayerID player_id, NetworkMsg::connect_status *status);
 
    void Synchronize();
    bool GetPeerConnectStatus(int id, int *frame);
-   bool IsInitialized() { return _udp != NULL; }
+   bool IsInitialized() { return _network != NULL; }
    bool IsSynchronized() { return _current_state == Running; }
    bool IsRunning() { return _current_state == Running; }
    void SendInput(GameInput &input);
    void SendInputAck();
-   bool HandlesMsg(sockaddr_in &from, UdpMsg *msg);
-   void OnMsg(UdpMsg *msg, int len);
+   bool HandlesMsg(GGPOConnectionPlayerID from, NetworkMsg *msg);
+   void OnMsg(NetworkMsg *msg, int len);
    void Disconnect();
   
    void GetNetworkStats(struct GGPONetworkStats *stats);
-   bool GetEvent(UdpProtocol::Event &e);
+   bool GetEvent(NetworkProtocol::Event &e);
    void GGPONetworkStats(Stats *stats);
    void SetLocalFrameNumber(int num);
    int RecommendFrameDelay();
@@ -92,42 +92,44 @@ protected:
       Running,
       Disconnected
    };
+
    struct QueueEntry {
       int         queue_time;
-      sockaddr_in dest_addr;
-      UdpMsg      *msg;
+      GGPOConnectionPlayerID dest_addr;
+      NetworkMsg      *msg;
 
       QueueEntry() {}
-      QueueEntry(int time, sockaddr_in &dst, UdpMsg *m) : queue_time(time), dest_addr(dst), msg(m) { }
+      QueueEntry(int time, GGPOConnectionPlayerID dst, NetworkMsg *m) : queue_time(time), dest_addr(dst), msg(m) { }
    };
 
    bool CreateSocket(int retries);
    void UpdateNetworkStats(void);
-   void QueueEvent(const UdpProtocol::Event &evt);
+   void QueueEvent(const NetworkProtocol::Event &evt);
    void ClearSendQueue(void);
    void Log(const char *fmt, ...);
-   void LogMsg(const char *prefix, UdpMsg *msg);
-   void LogEvent(const char *prefix, const UdpProtocol::Event &evt);
+   void LogMsg(const char *prefix, NetworkMsg *msg);
+   void LogEvent(const char *prefix, const NetworkProtocol::Event &evt);
    void SendSyncRequest();
-   void SendMsg(UdpMsg *msg);
+   void SendMsg(NetworkMsg *msg);
    void PumpSendQueue();
    void DispatchMsg(uint8 *buffer, int len);
    void SendPendingOutput();
-   bool OnInvalid(UdpMsg *msg, int len);
-   bool OnSyncRequest(UdpMsg *msg, int len);
-   bool OnSyncReply(UdpMsg *msg, int len);
-   bool OnInput(UdpMsg *msg, int len);
-   bool OnInputAck(UdpMsg *msg, int len);
-   bool OnQualityReport(UdpMsg *msg, int len);
-   bool OnQualityReply(UdpMsg *msg, int len);
-   bool OnKeepAlive(UdpMsg *msg, int len);
+
+   bool OnInvalid(NetworkMsg *msg, int len);
+   bool OnSyncRequest(NetworkMsg *msg, int len);
+   bool OnSyncReply(NetworkMsg *msg, int len);
+   bool OnInput(NetworkMsg *msg, int len);
+   bool OnInputAck(NetworkMsg *msg, int len);
+   bool OnQualityReport(NetworkMsg *msg, int len);
+   bool OnQualityReply(NetworkMsg *msg, int len);
+   bool OnKeepAlive(NetworkMsg *msg, int len);
 
 protected:
    /*
     * Network transmission information
     */
-   Udp            *_udp;
-   sockaddr_in    _peer_addr; 
+   Network       *_network;
+   GGPOConnectionPlayerID    _peer_addr; 
    uint16         _magic_number;
    int            _queue;
    uint16         _remote_magic_number;
@@ -135,10 +137,10 @@ protected:
    int            _send_latency;
    int            _oop_percent;
    struct {
-      int         send_time;
-      sockaddr_in dest_addr;
-      UdpMsg*     msg;
-   }              _oo_packet;
+      NetworkMsg*            msg;
+      GGPOConnectionPlayerID dest_addr;
+      int                    send_time;
+   } _oo_packet;
    RingBuffer<QueueEntry, 64> _send_queue;
 
    /*
@@ -153,8 +155,8 @@ protected:
    /*
     * The state machine
     */
-   UdpMsg::connect_status *_local_connect_status;
-   UdpMsg::connect_status _peer_connect_status[UDP_MSG_MAX_PLAYERS];
+   NetworkMsg::connect_status *_local_connect_status;
+   NetworkMsg::connect_status _peer_connect_status[UDP_MSG_MAX_PLAYERS];
 
    State          _current_state;
    union {
@@ -201,7 +203,7 @@ protected:
    /*
     * Event queue
     */
-   RingBuffer<UdpProtocol::Event, 64>  _event_queue;
+   RingBuffer<NetworkProtocol::Event, 64>  _event_queue;
 };
 
 #endif

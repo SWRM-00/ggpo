@@ -8,12 +8,11 @@
 #include "spectator.h"
 
 SpectatorBackend::SpectatorBackend(GGPOSessionCallbacks *cb,
+                                   GGPOConnectionCallbacks *connection,
                                    const char* gamename,
-                                   int localport,
                                    int num_players,
                                    int input_size,
-                                   char *hostip,
-                                   int hostport,
+                                   GGPOConnectionPlayerID player_id,
                                    void *user_data) :
    _num_players(num_players),
    _input_size(input_size),
@@ -30,12 +29,12 @@ SpectatorBackend::SpectatorBackend(GGPOSessionCallbacks *cb,
    /*
     * Initialize the UDP port
     */
-   _udp.Init(localport, &_poll, this);
+   _network.Init(&_poll, this, connection);
 
    /*
     * Init the host endpoint
     */
-   _host.Init(&_udp, _poll, 0, hostip, hostport, NULL);
+   _host.Init(&_network, _poll, 0, player_id, NULL);
    _host.Synchronize();
 
    /*
@@ -101,31 +100,31 @@ SpectatorBackend::IncrementFrame(void)
 void
 SpectatorBackend::PollUdpProtocolEvents(void)
 {
-   UdpProtocol::Event evt;
+   NetworkProtocol::Event evt;
    while (_host.GetEvent(evt)) {
       OnUdpProtocolEvent(evt);
    }
 }
 
 void
-SpectatorBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt)
+SpectatorBackend::OnUdpProtocolEvent(NetworkProtocol::Event &evt)
 {
    GGPOEvent info;
 
    switch (evt.type) {
-   case UdpProtocol::Event::Connected:
+   case NetworkProtocol::Event::Connected:
       info.code = GGPO_EVENTCODE_CONNECTED_TO_PEER;
       info.u.connected.player = 0;
       _callbacks.on_event(&info, _user_data);
       break;
-   case UdpProtocol::Event::Synchronizing:
+   case NetworkProtocol::Event::Synchronizing:
       info.code = GGPO_EVENTCODE_SYNCHRONIZING_WITH_PEER;
       info.u.synchronizing.player = 0;
       info.u.synchronizing.count = evt.u.synchronizing.count;
       info.u.synchronizing.total = evt.u.synchronizing.total;
       _callbacks.on_event(&info, _user_data);
       break;
-   case UdpProtocol::Event::Synchronzied:
+   case NetworkProtocol::Event::Synchronzied:
       if (_synchronizing) {
          info.code = GGPO_EVENTCODE_SYNCHRONIZED_WITH_PEER;
          info.u.synchronized.player = 0;
@@ -137,20 +136,20 @@ SpectatorBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt)
       }
       break;
 
-   case UdpProtocol::Event::NetworkInterrupted:
+   case NetworkProtocol::Event::NetworkInterrupted:
       info.code = GGPO_EVENTCODE_CONNECTION_INTERRUPTED;
       info.u.connection_interrupted.player = 0;
       info.u.connection_interrupted.disconnect_timeout = evt.u.network_interrupted.disconnect_timeout;
       _callbacks.on_event(&info, _user_data);
       break;
 
-   case UdpProtocol::Event::NetworkResumed:
+   case NetworkProtocol::Event::NetworkResumed:
       info.code = GGPO_EVENTCODE_CONNECTION_RESUMED;
       info.u.connection_resumed.player = 0;
       _callbacks.on_event(&info, _user_data);
       break;
 
-   case UdpProtocol::Event::Disconnected:
+   case NetworkProtocol::Event::Disconnected:
       GGPOEvent info;
 
       info.code = GGPO_EVENTCODE_DISCONNECTED_FROM_PEER;
@@ -158,7 +157,7 @@ SpectatorBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt)
       _callbacks.on_event(&info, _user_data);
       break;
 
-   case UdpProtocol::Event::Input:
+   case NetworkProtocol::Event::Input:
       GameInput& input = evt.u.input.input;
 
       _host.SetLocalFrameNumber(input.frame);
@@ -169,7 +168,7 @@ SpectatorBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt)
 }
  
 void
-SpectatorBackend::OnMsg(sockaddr_in &from, UdpMsg *msg, int len)
+SpectatorBackend::OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len)
 {
    if (_host.HandlesMsg(from, msg)) {
       _host.OnMsg(msg, len);

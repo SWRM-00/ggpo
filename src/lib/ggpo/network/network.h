@@ -9,7 +9,7 @@
 #define _UDP_H
 
 #include "poll.h"
-#include "udp_msg.h"
+#include "network_msg.h"
 #include "ggponet.h"
 #include "ring_buffer.h"
 
@@ -17,7 +17,7 @@
 
 static const int MAX_UDP_PACKET_SIZE = 4096;
 
-class Udp : public IPollSink
+class Network : public IPollSink
 {
 public:
    struct Stats {
@@ -28,7 +28,7 @@ public:
 
    struct Callbacks {
       virtual ~Callbacks() { }
-      virtual void OnMsg(sockaddr_in &from, UdpMsg *msg, int len) = 0;
+      virtual void OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len) = 0;
    };
 
 
@@ -36,20 +36,19 @@ protected:
    void Log(const char *fmt, ...);
 
 public:
-   Udp();
+   Network();
 
-   void Init(int port, Poll *p, Callbacks *callbacks);
-   
-   void SendTo(char *buffer, int len, int flags, struct sockaddr *dst, int destlen);
+   void Init(Poll *p, Callbacks *callbacks, GGPOConnectionCallbacks *connection_callbacks);
+   void SendTo(char *buffer, int len, int flags, GGPOConnectionPlayerID dst, int destlen);
 
    virtual bool OnLoopPoll(void *cookie);
 
 public:
-   ~Udp(void);
+   ~Network(void);
 
 protected:
-   // Network transmission information
-   SOCKET         _socket;
+   // Remote network.
+   GGPOConnectionCallbacks _connection_callbacks;
 
    // state management
    Callbacks      *_callbacks;

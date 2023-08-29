@@ -13,7 +13,7 @@
 
 #pragma pack(push, 1)
 
-struct UdpMsg
+struct NetworkMsg
 {
    enum MsgType {
       Invalid       = 0,
@@ -99,7 +99,7 @@ public:
       return 0;
    }
 
-   UdpMsg(MsgType t) { hdr.type = t; }
+   NetworkMsg(MsgType t) { hdr.type = t; }
 };
 
 #pragma pack(pop)

@@ -6,7 +6,7 @@
  */
 
 #include "types.h"
-#include "udp_proto.h"
+#include "network_proto.h"
 #include "bitvector.h"
 
 static const int UDP_HEADER_SIZE = 28;     /* Size of IP + UDP headers */
@@ -20,7 +20,7 @@ static const int NETWORK_STATS_INTERVAL  = 1000;
 static const int UDP_SHUTDOWN_TIMER = 5000;
 static const int MAX_SEQ_DISTANCE = (1 << 15);
 
-UdpProtocol::UdpProtocol() :
+NetworkProtocol::NetworkProtocol() :
    _local_frame_advantage(0),
    _remote_frame_advantage(0),
    _queue(-1),
@@ -38,7 +38,7 @@ UdpProtocol::UdpProtocol() :
    _connected(false),
    _next_send_seq(0),
    _next_recv_seq(0),
-   _udp(NULL)
+   _network(NULL)
 {
    _last_sent_input.init(-1, NULL, 1);
    _last_received_input.init(-1, NULL, 1);
@@ -58,26 +58,23 @@ UdpProtocol::UdpProtocol() :
    _oop_percent = oop_pct ? atoi(oop_pct) : 0;
 }
 
-UdpProtocol::~UdpProtocol()
+NetworkProtocol::~NetworkProtocol()
 {
    ClearSendQueue();
 }
 
 void
-UdpProtocol::Init(Udp *udp,
+NetworkProtocol::Init(Network *network,
                   Poll &poll,
                   int queue,
-                  char *ip,
-                  int port,
-                  UdpMsg::connect_status *status)
+                  GGPOConnectionPlayerID player_id,
+                  NetworkMsg::connect_status *status)
 {  
-   _udp = udp;
+   _network = network;
    _queue = queue;
    _local_connect_status = status;
 
-   _peer_addr.sin_family = AF_INET;
-   _peer_addr.sin_addr.s_addr = inet_addr(ip);
-   _peer_addr.sin_port = htons(port);
+   _peer_addr = player_id;
    
    do {
       _magic_number = rand();
@@ -86,9 +83,9 @@ UdpProtocol::Init(Udp *udp,
 }
 
 void
-UdpProtocol::SendInput(GameInput &input)
+NetworkProtocol::SendInput(GameInput &input)
 {
-   if (_udp) {
+   if (_network) {
       if (_current_state == Running) {
          /*
           * Check to see if this is a good time to adjust for the rift...
@@ -110,9 +107,9 @@ UdpProtocol::SendInput(GameInput &input)
 }
 
 void
-UdpProtocol::SendPendingOutput()
+NetworkProtocol::SendPendingOutput()
 {
-   UdpMsg *msg = new UdpMsg(UdpMsg::Input);
+   NetworkMsg *msg = new NetworkMsg(NetworkMsg::Input);
    int i, j, offset = 0;
    uint8 *bits;
    GameInput last;
@@ -150,9 +147,9 @@ UdpProtocol::SendPendingOutput()
 
    msg->u.input.disconnect_requested = _current_state == Disconnected;
    if (_local_connect_status) {
-      memcpy(msg->u.input.peer_connect_status, _local_connect_status, sizeof(UdpMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
+      memcpy(msg->u.input.peer_connect_status, _local_connect_status, sizeof(NetworkMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
    } else {
-      memset(msg->u.input.peer_connect_status, 0, sizeof(UdpMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
+      memset(msg->u.input.peer_connect_status, 0, sizeof(NetworkMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
    }
 
    ASSERT(offset < MAX_COMPRESSED_BITS);
@@ -161,15 +158,15 @@ UdpProtocol::SendPendingOutput()
 }
 
 void
-UdpProtocol::SendInputAck()
+NetworkProtocol::SendInputAck()
 {
-   UdpMsg *msg = new UdpMsg(UdpMsg::InputAck);
+   NetworkMsg *msg = new NetworkMsg(NetworkMsg::InputAck);
    msg->u.input_ack.ack_frame = _last_received_input.frame;
    SendMsg(msg);
 }
 
 bool
-UdpProtocol::GetEvent(UdpProtocol::Event &e)
+NetworkProtocol::GetEvent(NetworkProtocol::Event &e)
 {
    if (_event_queue.size() == 0) {
       return false;
@@ -181,9 +178,9 @@ UdpProtocol::GetEvent(UdpProtocol::Event &e)
 
 
 bool
-UdpProtocol::OnLoopPoll(void *cookie)
+NetworkProtocol::OnLoopPoll(void *cookie)
 {
-   if (!_udp) {
+   if (!_network) {
       return true;
    }
 
@@ -209,7 +206,7 @@ UdpProtocol::OnLoopPoll(void *cookie)
       }
 
       if (!_state.running.last_quality_report_time || _state.running.last_quality_report_time + QUALITY_REPORT_INTERVAL < now) {
-         UdpMsg *msg = new UdpMsg(UdpMsg::QualityReport);
+         NetworkMsg *msg = new NetworkMsg(NetworkMsg::QualityReport);
          msg->u.quality_report.ping = Platform::GetCurrentTimeMS();
          msg->u.quality_report.frame_advantage = _local_frame_advantage;
          SendMsg(msg);
@@ -223,7 +220,7 @@ UdpProtocol::OnLoopPoll(void *cookie)
 
       if (_last_send_time && _last_send_time + KEEP_ALIVE_INTERVAL < now) {
          Log("Sending keep alive packet\n");
-         SendMsg(new UdpMsg(UdpMsg::KeepAlive));
+         SendMsg(new NetworkMsg(NetworkMsg::KeepAlive));
       }
 
       if (_disconnect_timeout && _disconnect_notify_start && 
@@ -246,8 +243,8 @@ UdpProtocol::OnLoopPoll(void *cookie)
 
    case Disconnected:
       if (_shutdown_timeout < now) {
-         Log("Shutting down udp connection.\n");
-         _udp = NULL;
+         Log("Shutting down connection.\n");
+         _network = NULL;
          _shutdown_timeout = 0;
       }
 
@@ -258,23 +255,23 @@ UdpProtocol::OnLoopPoll(void *cookie)
 }
 
 void
-UdpProtocol::Disconnect()
+NetworkProtocol::Disconnect()
 {
    _current_state = Disconnected;
    _shutdown_timeout = Platform::GetCurrentTimeMS() + UDP_SHUTDOWN_TIMER;
 }
 
 void
-UdpProtocol::SendSyncRequest()
+NetworkProtocol::SendSyncRequest()
 {
    _state.sync.random = rand() & 0xFFFF;
-   UdpMsg *msg = new UdpMsg(UdpMsg::SyncRequest);
+   NetworkMsg *msg = new NetworkMsg(NetworkMsg::SyncRequest);
    msg->u.sync_request.random_request = _state.sync.random;
    SendMsg(msg);
 }
 
 void
-UdpProtocol::SendMsg(UdpMsg *msg)
+NetworkProtocol::SendMsg(NetworkMsg *msg)
 {
    LogMsg("send", msg);
 
@@ -290,36 +287,34 @@ UdpProtocol::SendMsg(UdpMsg *msg)
 }
 
 bool
-UdpProtocol::HandlesMsg(sockaddr_in &from,
-                        UdpMsg *msg)
+NetworkProtocol::HandlesMsg(GGPOConnectionPlayerID from, NetworkMsg *msg)
 {
-   if (!_udp) {
+   if (!_network) 
       return false;
-   }
-   return _peer_addr.sin_addr.s_addr == from.sin_addr.s_addr &&
-          _peer_addr.sin_port == from.sin_port;
+   
+   return _peer_addr == from; 
 }
 
 void
-UdpProtocol::OnMsg(UdpMsg *msg, int len)
+NetworkProtocol::OnMsg(NetworkMsg *msg, int len)
 {
    bool handled = false;
-   typedef bool (UdpProtocol::*DispatchFn)(UdpMsg *msg, int len);
+   typedef bool (NetworkProtocol::*DispatchFn)(NetworkMsg *msg, int len);
    static const DispatchFn table[] = {
-      &UdpProtocol::OnInvalid,             /* Invalid */
-      &UdpProtocol::OnSyncRequest,         /* SyncRequest */
-      &UdpProtocol::OnSyncReply,           /* SyncReply */
-      &UdpProtocol::OnInput,               /* Input */
-      &UdpProtocol::OnQualityReport,       /* QualityReport */
-      &UdpProtocol::OnQualityReply,        /* QualityReply */
-      &UdpProtocol::OnKeepAlive,           /* KeepAlive */
-      &UdpProtocol::OnInputAck,            /* InputAck */
+      &NetworkProtocol::OnInvalid,             /* Invalid */
+      &NetworkProtocol::OnSyncRequest,         /* SyncRequest */
+      &NetworkProtocol::OnSyncReply,           /* SyncReply */
+      &NetworkProtocol::OnInput,               /* Input */
+      &NetworkProtocol::OnQualityReport,       /* QualityReport */
+      &NetworkProtocol::OnQualityReply,        /* QualityReply */
+      &NetworkProtocol::OnKeepAlive,           /* KeepAlive */
+      &NetworkProtocol::OnInputAck,            /* InputAck */
    };
 
    // filter out messages that don't match what we expect
    int seq = msg->hdr.sequence_number;
-   if (msg->hdr.type != UdpMsg::SyncRequest &&
-       msg->hdr.type != UdpMsg::SyncReply) {
+   if (msg->hdr.type != NetworkMsg::SyncRequest &&
+       msg->hdr.type != NetworkMsg::SyncReply) {
       if (msg->hdr.magic != _remote_magic_number) {
          LogMsg("recv rejecting", msg);
          return;
@@ -351,7 +346,7 @@ UdpProtocol::OnMsg(UdpMsg *msg, int len)
 }
 
 void
-UdpProtocol::UpdateNetworkStats(void)
+NetworkProtocol::UpdateNetworkStats(void)
 {
    int now = Platform::GetCurrentTimeMS();
 
@@ -377,16 +372,16 @@ UdpProtocol::UpdateNetworkStats(void)
 
 
 void
-UdpProtocol::QueueEvent(const UdpProtocol::Event &evt)
+NetworkProtocol::QueueEvent(const NetworkProtocol::Event &evt)
 {
    LogEvent("Queuing event", evt);
    _event_queue.push(evt);
 }
 
 void
-UdpProtocol::Synchronize()
+NetworkProtocol::Synchronize()
 {
-   if (_udp) {
+   if (_network) {
       _current_state = Syncing;
       _state.sync.roundtrips_remaining = NUM_SYNC_PACKETS;
       SendSyncRequest();
@@ -394,14 +389,14 @@ UdpProtocol::Synchronize()
 }
 
 bool
-UdpProtocol::GetPeerConnectStatus(int id, int *frame)
+NetworkProtocol::GetPeerConnectStatus(int id, int *frame)
 {
    *frame = _peer_connect_status[id].last_frame;
    return !_peer_connect_status[id].disconnected;
 }
 
 void
-UdpProtocol::Log(const char *fmt, ...)
+NetworkProtocol::Log(const char *fmt, ...)
 {
    char buf[1024];
    size_t offset;
@@ -417,70 +412,70 @@ UdpProtocol::Log(const char *fmt, ...)
 }
 
 void
-UdpProtocol::LogMsg(const char *prefix, UdpMsg *msg)
+NetworkProtocol::LogMsg(const char *prefix, NetworkMsg *msg)
 {
    switch (msg->hdr.type) {
-   case UdpMsg::SyncRequest:
+   case NetworkMsg::SyncRequest:
       Log("%s sync-request (%d).\n", prefix,
           msg->u.sync_request.random_request);
       break;
-   case UdpMsg::SyncReply:
+   case NetworkMsg::SyncReply:
       Log("%s sync-reply (%d).\n", prefix,
           msg->u.sync_reply.random_reply);
       break;
-   case UdpMsg::QualityReport:
+   case NetworkMsg::QualityReport:
       Log("%s quality report.\n", prefix);
       break;
-   case UdpMsg::QualityReply:
+   case NetworkMsg::QualityReply:
       Log("%s quality reply.\n", prefix);
       break;
-   case UdpMsg::KeepAlive:
+   case NetworkMsg::KeepAlive:
       Log("%s keep alive.\n", prefix);
       break;
-   case UdpMsg::Input:
+   case NetworkMsg::Input:
       Log("%s game-compressed-input %d (+ %d bits).\n", prefix, msg->u.input.start_frame, msg->u.input.num_bits);
       break;
-   case UdpMsg::InputAck:
+   case NetworkMsg::InputAck:
       Log("%s input ack.\n", prefix);
       break;
    default:
-      ASSERT(FALSE && "Unknown UdpMsg type.");
+      ASSERT(FALSE && "Unknown NetworkMsg type.");
    }
 }
 
 void
-UdpProtocol::LogEvent(const char *prefix, const UdpProtocol::Event &evt)
+NetworkProtocol::LogEvent(const char *prefix, const NetworkProtocol::Event &evt)
 {
    switch (evt.type) {
-   case UdpProtocol::Event::Synchronzied:
+   case NetworkProtocol::Event::Synchronzied:
       Log("%s (event: Synchronzied).\n", prefix);
       break;
    }
 }
 
 bool
-UdpProtocol::OnInvalid(UdpMsg *msg, int len)
+NetworkProtocol::OnInvalid(NetworkMsg *msg, int len)
 {
-   ASSERT(FALSE && "Invalid msg in UdpProtocol");
+   ASSERT(FALSE && "Invalid msg in NetworkProtocol");
    return false;
 }
 
 bool
-UdpProtocol::OnSyncRequest(UdpMsg *msg, int len)
+NetworkProtocol::OnSyncRequest(NetworkMsg *msg, int len)
 {
    if (_remote_magic_number != 0 && msg->hdr.magic != _remote_magic_number) {
       Log("Ignoring sync request from unknown endpoint (%d != %d).\n", 
            msg->hdr.magic, _remote_magic_number);
       return false;
    }
-   UdpMsg *reply = new UdpMsg(UdpMsg::SyncReply);
+   NetworkMsg *reply = new NetworkMsg(NetworkMsg::SyncReply);
    reply->u.sync_reply.random_reply = msg->u.sync_request.random_request;
    SendMsg(reply);
    return true;
 }
 
 bool
-UdpProtocol::OnSyncReply(UdpMsg *msg, int len)
+NetworkProtocol::OnSyncReply(NetworkMsg *msg, int len)
 {
    if (_current_state != Syncing) {
       Log("Ignoring SyncReply while not synching.\n");
@@ -501,12 +496,12 @@ UdpProtocol::OnSyncReply(UdpMsg *msg, int len)
    Log("Checking sync state (%d round trips remaining).\n", _state.sync.roundtrips_remaining);
    if (--_state.sync.roundtrips_remaining == 0) {
       Log("Synchronized!\n");
-      QueueEvent(UdpProtocol::Event(UdpProtocol::Event::Synchronzied));
+      QueueEvent(NetworkProtocol::Event(NetworkProtocol::Event::Synchronzied));
       _current_state = Running;
       _last_received_input.frame = -1;
       _remote_magic_number = msg->hdr.magic;
    } else {
-      UdpProtocol::Event evt(UdpProtocol::Event::Synchronizing);
+      NetworkProtocol::Event evt(NetworkProtocol::Event::Synchronizing);
       evt.u.synchronizing.total = NUM_SYNC_PACKETS;
       evt.u.synchronizing.count = NUM_SYNC_PACKETS - _state.sync.roundtrips_remaining;
       QueueEvent(evt);
@@ -516,7 +511,7 @@ UdpProtocol::OnSyncReply(UdpMsg *msg, int len)
 }
 
 bool
-UdpProtocol::OnInput(UdpMsg *msg, int len)
+NetworkProtocol::OnInput(NetworkMsg *msg, int len)
 {
    /*
     * If a disconnect is requested, go ahead and disconnect now.
@@ -533,7 +528,7 @@ UdpProtocol::OnInput(UdpMsg *msg, int len)
        * Update the peer connection status if this peer is still considered to be part
        * of the network.
        */
-      UdpMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
+      NetworkMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
       for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
          ASSERT(remote_status[i].last_frame >= _peer_connect_status[i].last_frame);
          _peer_connect_status[i].disconnected = _peer_connect_status[i].disconnected || remote_status[i].disconnected;
@@ -591,7 +586,7 @@ UdpProtocol::OnInput(UdpMsg *msg, int len)
             /*
              * Send the event to the emualtor
              */
-            UdpProtocol::Event evt(UdpProtocol::Event::Input);
+            NetworkProtocol::Event evt(NetworkProtocol::Event::Input);
             evt.u.input.input = _last_received_input;
 
             _last_received_input.desc(desc);
@@ -626,7 +621,7 @@ UdpProtocol::OnInput(UdpMsg *msg, int len)
 
 
 bool
-UdpProtocol::OnInputAck(UdpMsg *msg, int len)
+NetworkProtocol::OnInputAck(NetworkMsg *msg, int len)
 {
    /*
     * Get rid of our buffered input
@@ -640,10 +635,10 @@ UdpProtocol::OnInputAck(UdpMsg *msg, int len)
 }
 
 bool
-UdpProtocol::OnQualityReport(UdpMsg *msg, int len)
+NetworkProtocol::OnQualityReport(NetworkMsg *msg, int len)
 {
    // send a reply so the other side can compute the round trip transmit time.
-   UdpMsg *reply = new UdpMsg(UdpMsg::QualityReply);
+   NetworkMsg *reply = new NetworkMsg(NetworkMsg::QualityReply);
    reply->u.quality_reply.pong = msg->u.quality_report.ping;
    SendMsg(reply);
 
@@ -652,20 +647,20 @@ UdpProtocol::OnQualityReport(UdpMsg *msg, int len)
 }
 
 bool
-UdpProtocol::OnQualityReply(UdpMsg *msg, int len)
+NetworkProtocol::OnQualityReply(NetworkMsg *msg, int len)
 {
    _round_trip_time = Platform::GetCurrentTimeMS() - msg->u.quality_reply.pong;
    return true;
 }
 
 bool
-UdpProtocol::OnKeepAlive(UdpMsg *msg, int len)
+NetworkProtocol::OnKeepAlive(NetworkMsg *msg, int len)
 {
    return true;
 }
 
 void
-UdpProtocol::GetNetworkStats(struct GGPONetworkStats *s)
+NetworkProtocol::GetNetworkStats(struct GGPONetworkStats *s)
 {
    s->network.ping = _round_trip_time;
    s->network.send_queue_len = _pending_output.size();
@@ -675,13 +670,15 @@ UdpProtocol::GetNetworkStats(struct GGPONetworkStats *s)
 }
 
 void
-UdpProtocol::SetLocalFrameNumber(int localFrame)
+NetworkProtocol::SetLocalFrameNumber(int localFrame)
 {
    /*
     * Estimate which frame the other guy is one by looking at the
     * last frame they gave us plus some delta for the one-way packet
     * trip time.
     */
+   /// TODO(Roelof): This seems to imply a fixed 60fps framerate, is this an 
+   /// issue and can we make it at least settable from outside the library?.
    int remoteFrame = _last_received_input.frame + (_round_trip_time * 60 / 1000);
 
    /*
@@ -694,7 +691,7 @@ UdpProtocol::SetLocalFrameNumber(int localFrame)
 }
 
 int
-UdpProtocol::RecommendFrameDelay()
+NetworkProtocol::RecommendFrameDelay()
 {
    // XXX: require idle input should be a configuration parameter
    return _timesync.recommend_frame_wait_duration(false);
@@ -702,19 +699,19 @@ UdpProtocol::RecommendFrameDelay()
 
 
 void
-UdpProtocol::SetDisconnectTimeout(int timeout)
+NetworkProtocol::SetDisconnectTimeout(int timeout)
 {
    _disconnect_timeout = timeout;
 }
 
 void
-UdpProtocol::SetDisconnectNotifyStart(int timeout)
+NetworkProtocol::SetDisconnectNotifyStart(int timeout)
 {
    _disconnect_notify_start = timeout;
 }
 
 void
-UdpProtocol::PumpSendQueue()
+NetworkProtocol::PumpSendQueue()
 {
    while (!_send_queue.empty()) {
       QueueEntry &entry = _send_queue.front();
@@ -734,10 +731,8 @@ UdpProtocol::PumpSendQueue()
          _oo_packet.msg = entry.msg;
          _oo_packet.dest_addr = entry.dest_addr;
       } else {
-         ASSERT(entry.dest_addr.sin_addr.s_addr);
-
-         _udp->SendTo((char *)entry.msg, entry.msg->PacketSize(), 0,
-                      (struct sockaddr *)&entry.dest_addr, sizeof entry.dest_addr);
+         _network->SendTo((char *)entry.msg, entry.msg->PacketSize(), 0,
+          entry.dest_addr, sizeof entry.dest_addr);
 
          delete entry.msg;
       }
@@ -745,8 +740,8 @@ UdpProtocol::PumpSendQueue()
    }
    if (_oo_packet.msg && _oo_packet.send_time < Platform::GetCurrentTimeMS()) {
       Log("sending rogue oop!");
-      _udp->SendTo((char *)_oo_packet.msg, _oo_packet.msg->PacketSize(), 0,
-                     (struct sockaddr *)&_oo_packet.dest_addr, sizeof _oo_packet.dest_addr);
+      _network->SendTo((char *)_oo_packet.msg, _oo_packet.msg->PacketSize(), 0,
+                     _oo_packet.dest_addr, sizeof _oo_packet.dest_addr);
 
       delete _oo_packet.msg;
       _oo_packet.msg = NULL;
@@ -754,7 +749,7 @@ UdpProtocol::PumpSendQueue()
 }
 
 void
-UdpProtocol::ClearSendQueue()
+NetworkProtocol::ClearSendQueue()
 {
    while (!_send_queue.empty()) {
       delete _send_queue.front().msg;

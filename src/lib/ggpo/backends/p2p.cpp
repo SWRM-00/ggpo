@@ -12,8 +12,8 @@ static const int DEFAULT_DISCONNECT_TIMEOUT        = 5000;
 static const int DEFAULT_DISCONNECT_NOTIFY_START   = 750;
 
 Peer2PeerBackend::Peer2PeerBackend(GGPOSessionCallbacks *cb,
+                                   GGPOConnectionCallbacks *connection,
                                    const char *gamename,
-                                   int localport,
                                    int num_players,
                                    int input_size, void *user) :
     _num_players(num_players),
@@ -42,9 +42,9 @@ Peer2PeerBackend::Peer2PeerBackend(GGPOSessionCallbacks *cb,
    /*
     * Initialize the UDP port
     */
-   _udp.Init(localport, &_poll, this);
+   _network.Init(&_poll, this, connection);
 
-   _endpoints = new UdpProtocol[_num_players];
+   _endpoints = new NetworkProtocol[_num_players];
    memset(_local_connect_status, 0, sizeof(_local_connect_status));
    for (int i = 0; i < ARRAY_SIZE(_local_connect_status); i++) {
       _local_connect_status[i].last_frame = -1;
@@ -62,8 +62,7 @@ Peer2PeerBackend::~Peer2PeerBackend()
 }
 
 void
-Peer2PeerBackend::AddRemotePlayer(char *ip,
-                                  int port,
+Peer2PeerBackend::AddRemotePlayer(GGPOConnectionPlayerID player,
                                   int queue)
 {
    /*
@@ -71,14 +70,13 @@ Peer2PeerBackend::AddRemotePlayer(char *ip,
     */
    _synchronizing = true;
    
-   _endpoints[queue].Init(&_udp, _poll, queue, ip, port, _local_connect_status);
+   _endpoints[queue].Init(&_network, _poll, queue, player, _local_connect_status);
    _endpoints[queue].SetDisconnectTimeout(_disconnect_timeout);
    _endpoints[queue].SetDisconnectNotifyStart(_disconnect_notify_start);
    _endpoints[queue].Synchronize();
 }
 
-GGPOErrorCode Peer2PeerBackend::AddSpectator(char *ip,
-                                             int port)
+GGPOErrorCode Peer2PeerBackend::AddSpectator(GGPOConnectionPlayerID connection)
 {
    if (_num_spectators == GGPO_MAX_SPECTATORS) {
       return GGPO_ERRORCODE_TOO_MANY_SPECTATORS;
@@ -91,7 +89,7 @@ GGPOErrorCode Peer2PeerBackend::AddSpectator(char *ip,
    }
    int queue = _num_spectators++;
 
-   _spectators[queue].Init(&_udp, _poll, queue + 1000, ip, port, _local_connect_status);
+   _spectators[queue].Init(&_network, _poll, queue + 1000, connection, _local_connect_status);
    _spectators[queue].SetDisconnectTimeout(_disconnect_timeout);
    _spectators[queue].SetDisconnectNotifyStart(_disconnect_notify_start);
    _spectators[queue].Synchronize();
@@ -246,7 +244,7 @@ Peer2PeerBackend::AddPlayer(GGPOPlayer *player,
                             GGPOPlayerHandle *handle)
 {
    if (player->type == GGPO_PLAYERTYPE_SPECTATOR) {
-      return AddSpectator(player->u.remote.ip_address, player->u.remote.port);
+      return AddSpectator(player->u.remote.player_id);
    }
 
    int queue = player->player_num - 1;
@@ -256,7 +254,7 @@ Peer2PeerBackend::AddPlayer(GGPOPlayer *player,
    *handle = QueueToPlayerHandle(queue);
 
    if (player->type == GGPO_PLAYERTYPE_REMOTE) {
-      AddRemotePlayer(player->u.remote.ip_address, player->u.remote.port, queue);
+      AddRemotePlayer(player->u.remote.player_id, queue);
    }
    return GGPO_OK;
 }
@@ -352,7 +350,7 @@ Peer2PeerBackend::PollSyncEvents(void)
 void
 Peer2PeerBackend::PollUdpProtocolEvents(void)
 {
-   UdpProtocol::Event evt;
+   NetworkProtocol::Event evt;
    for (int i = 0; i < _num_players; i++) {
       while (_endpoints[i].GetEvent(evt)) {
          OnUdpProtocolPeerEvent(evt, i);
@@ -366,11 +364,11 @@ Peer2PeerBackend::PollUdpProtocolEvents(void)
 }
 
 void
-Peer2PeerBackend::OnUdpProtocolPeerEvent(UdpProtocol::Event &evt, int queue)
+Peer2PeerBackend::OnUdpProtocolPeerEvent(NetworkProtocol::Event &evt, int queue)
 {
    OnUdpProtocolEvent(evt, QueueToPlayerHandle(queue));
    switch (evt.type) {
-      case UdpProtocol::Event::Input:
+      case NetworkProtocol::Event::Input:
          if (!_local_connect_status[queue].disconnected) {
             int current_remote_frame = _local_connect_status[queue].last_frame;
             int new_remote_frame = evt.u.input.input.frame;
@@ -383,7 +381,7 @@ Peer2PeerBackend::OnUdpProtocolPeerEvent(UdpProtocol::Event &evt, int queue)
          }
          break;
 
-   case UdpProtocol::Event::Disconnected:
+   case NetworkProtocol::Event::Disconnected:
       DisconnectPlayer(QueueToPlayerHandle(queue));
       break;
    }
@@ -391,7 +389,7 @@ Peer2PeerBackend::OnUdpProtocolPeerEvent(UdpProtocol::Event &evt, int queue)
 
 
 void
-Peer2PeerBackend::OnUdpProtocolSpectatorEvent(UdpProtocol::Event &evt, int queue)
+Peer2PeerBackend::OnUdpProtocolSpectatorEvent(NetworkProtocol::Event &evt, int queue)
 {
    GGPOPlayerHandle handle = QueueToSpectatorHandle(queue);
    OnUdpProtocolEvent(evt, handle);
@@ -399,7 +397,7 @@ Peer2PeerBackend::OnUdpProtocolSpectatorEvent(UdpProtocol::Event &evt, int queue
    GGPOEvent info;
 
    switch (evt.type) {
-   case UdpProtocol::Event::Disconnected:
+   case NetworkProtocol::Event::Disconnected:
       _spectators[queue].Disconnect();
 
       info.code = GGPO_EVENTCODE_DISCONNECTED_FROM_PEER;
@@ -411,24 +409,24 @@ Peer2PeerBackend::OnUdpProtocolSpectatorEvent(UdpProtocol::Event &evt, int queue
 }
 
 void
-Peer2PeerBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt, GGPOPlayerHandle handle)
+Peer2PeerBackend::OnUdpProtocolEvent(NetworkProtocol::Event &evt, GGPOPlayerHandle handle)
 {
    GGPOEvent info;
 
    switch (evt.type) {
-   case UdpProtocol::Event::Connected:
+   case NetworkProtocol::Event::Connected:
       info.code = GGPO_EVENTCODE_CONNECTED_TO_PEER;
       info.u.connected.player = handle;
       _callbacks.on_event(&info, _user_data);
       break;
-   case UdpProtocol::Event::Synchronizing:
+   case NetworkProtocol::Event::Synchronizing:
       info.code = GGPO_EVENTCODE_SYNCHRONIZING_WITH_PEER;
       info.u.synchronizing.player = handle;
       info.u.synchronizing.count = evt.u.synchronizing.count;
       info.u.synchronizing.total = evt.u.synchronizing.total;
       _callbacks.on_event(&info, _user_data);
       break;
-   case UdpProtocol::Event::Synchronzied:
+   case NetworkProtocol::Event::Synchronzied:
       info.code = GGPO_EVENTCODE_SYNCHRONIZED_WITH_PEER;
       info.u.synchronized.player = handle;
       _callbacks.on_event(&info, _user_data);
@@ -436,14 +434,14 @@ Peer2PeerBackend::OnUdpProtocolEvent(UdpProtocol::Event &evt, GGPOPlayerHandle h
       CheckInitialSync();
       break;
 
-   case UdpProtocol::Event::NetworkInterrupted:
+   case NetworkProtocol::Event::NetworkInterrupted:
       info.code = GGPO_EVENTCODE_CONNECTION_INTERRUPTED;
       info.u.connection_interrupted.player = handle;
       info.u.connection_interrupted.disconnect_timeout = evt.u.network_interrupted.disconnect_timeout;
       _callbacks.on_event(&info, _user_data);
       break;
 
-   case UdpProtocol::Event::NetworkResumed:
+   case NetworkProtocol::Event::NetworkResumed:
       info.code = GGPO_EVENTCODE_CONNECTION_RESUMED;
       info.u.connection_resumed.player = handle;
       _callbacks.on_event(&info, _user_data);
@@ -583,7 +581,7 @@ Peer2PeerBackend::PlayerHandleToQueue(GGPOPlayerHandle player, int *queue)
 
  
 void
-Peer2PeerBackend::OnMsg(sockaddr_in &from, UdpMsg *msg, int len)
+Peer2PeerBackend::OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len)
 {
    for (int i = 0; i < _num_players; i++) {
       if (_endpoints[i].HandlesMsg(from, msg)) {

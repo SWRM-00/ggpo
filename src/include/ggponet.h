@@ -20,7 +20,11 @@
 #endif
 
 #ifdef __GNUC__
+#if defined(i386) || defined(__i386__) || defined(__i386) || defined(_M_IX86)
 #define __cdecl __attribute__((cdecl))
+#else
+#define __cdecl 
+#endif
 #endif
 
 #ifdef __cplusplus
@@ -28,6 +32,7 @@ extern "C" {
 #endif
 
 #include <stdarg.h>
+#include <stdint.h>
 
 // On windows, export at build time and import at runtime.
 // ELF systems don't need an explicit export/import.
@@ -62,6 +67,24 @@ typedef enum {
 } GGPOPlayerType;
 
 /*
+ * Handle for a single player ID connection. This should be large enough to keep
+ * a pointer in memory. 
+ * NOTE: These IDs aren't expected to be shared further than just the current 
+ * application and as such only require a pointer size.
+ */
+typedef uint64_t GGPOConnectionPlayerID;
+#ifdef _DEBUG
+#include <assert.h>
+static inline void __check_ptr_size()
+{
+   _Static_assert(sizeof(GGPOConnectionPlayerID) >= sizeof(int *), "MAINTAINER "
+     "NOTE: GGPOConnectionPlayerID must be larger than (or equal in size to) a "
+     "pointer. See comment in definition for GGPOConnectionPlayerID.");
+}
+#endif
+
+
+/*
  * The GGPOPlayer structure used to describe players in ggpo_add_player
  *
  * size: Should be set to the sizeof(GGPOPlayer)
@@ -76,12 +99,8 @@ typedef enum {
  *
  * If type == GGPO_PLAYERTYPE_REMOTE:
  * 
- * u.remote.ip_address:  The ip address of the ggpo session which will host this
- *       player.
- *
- * u.remote.port: The port where udp packets should be sent to reach this player.
- *       All the local inputs for this session will be sent to this player at
- *       ip_address:port.
+ * u.remote.player_id:  The player ID that is used when sending callbacks to the
+ *       network backend.
  *
  */
 
@@ -93,8 +112,7 @@ typedef struct GGPOPlayer {
       struct {
       } local;
       struct {
-         char        ip_address[32];
-         short       port;
+         GGPOConnectionPlayerID player_id;
       } remote;
    } u;
 } GGPOPlayer;
@@ -311,6 +329,34 @@ typedef struct GGPONetworkStats {
    } timesync;
 } GGPONetworkStats;
 
+
+/*
+ * The GGPOConnectionCallbacks struct contains callbacks that are used for making
+ * the connection with remote players.
+ * This must be provided by the user when creating a new session.
+ */
+typedef struct GGPOConnectionCallbacks {
+   /*
+    * Refers to the instance of the connection. This will be passed along to all
+    * callback functions defined here.
+    */
+   void *user_data;
+
+   /*
+    * send_message must send a message in a given buffer to a given oponent.
+    * TODO: Actual function pointer.
+    */
+   void (__cdecl *send_message)(const char *buffer, int buffer_len, int flags, GGPOConnectionPlayerID target_player, void *user);
+
+   /*
+    * poll_message must check if there are any incoming messages and if there 
+    * are, it must fill the pointers and return the size of the incoming message.
+    * TODO: Actual function pointer.
+    */
+   int (__cdecl *poll_message)(char *buffer, int buffer_max_len, int flags, GGPOConnectionPlayerID* player_id, void *user);
+
+} GGPOConnectionCallbacks;
+
 /*
  * ggpo_start_session --
  *
@@ -323,6 +369,13 @@ typedef struct GGPONetworkStats {
  * cb - A GGPOSessionCallbacks structure which contains the callbacks you implement
  * to help GGPO.net synchronize the two games.  You must implement all functions in
  * cb, even if they do nothing but 'return true';
+ * NOTE(Roelof): This takes in a pointer to a callback structure, but doesn't 
+ * store the pointer itself, its contents are copied, so while the pointers 
+ * within the structure all obviously need to stay valid, the structure is safe 
+ * to be allocated on the stack and referenced.
+ *
+ * connection - A GGPOConnectionCallbacks structure which contains filled out 
+ * callbacks for sending/polling network data.
  *
  * game - The name of the game.  This is used internally for GGPO for logging purposes only.
  *
@@ -332,14 +385,14 @@ typedef struct GGPONetworkStats {
  *
  * input_size - The size of the game inputs which will be passsed to ggpo_add_local_input.
  *
- * local_port - The port GGPO should bind to for UDP traffic.
+ *
  */
 GGPO_API GGPOErrorCode __cdecl ggpo_start_session(GGPOSession **session,
                                                   GGPOSessionCallbacks *cb,
+                                                  GGPOConnectionCallbacks *connection,
                                                   const char *game,
                                                   int num_players,
                                                   int input_size,
-                                                  int localport,
                                                   void *user);
 
 
@@ -407,22 +460,13 @@ GGPO_API GGPOErrorCode __cdecl ggpo_start_synctest(GGPOSession **session,
  * disconnects, you must start a new session.
  *
  * input_size - The size of the game inputs which will be passsed to ggpo_add_local_input.
- *
- * local_port - The port GGPO should bind to for UDP traffic.
- *
- * host_ip - The IP address of the host who will serve you the inputs for the game.  Any
- * player partcipating in the session can serve as a host.
- *
- * host_port - The port of the session on the host
  */
 GGPO_API GGPOErrorCode __cdecl ggpo_start_spectating(GGPOSession **session,
                                                      GGPOSessionCallbacks *cb,
+                                                     GGPOConnectionCallbacks *connection,
                                                      const char *game,
                                                      int num_players,
                                                      int input_size,
-                                                     int local_port,
-                                                     char *host_ip,
-                                                     int host_port,
                                                      void *user_data);
 
 /*

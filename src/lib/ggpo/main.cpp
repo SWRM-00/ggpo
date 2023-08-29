@@ -31,15 +31,15 @@ ggpo_logv(GGPOSession *ggpo, const char *fmt, va_list args)
 GGPOErrorCode
 ggpo_start_session(GGPOSession **session,
                    GGPOSessionCallbacks *cb,
+                   GGPOConnectionCallbacks *connection,
                    const char *game,
                    int num_players,
                    int input_size,
-                   int localport,
                    void *user)
 {
    *session= (GGPOSession *)new Peer2PeerBackend(cb,
+                                                 connection,
                                                  game,
-                                                 localport,
                                                  num_players,
                                                  input_size, 
                                                  user);
@@ -183,23 +183,23 @@ ggpo_set_disconnect_notify_start(GGPOSession *ggpo, int timeout)
    return ggpo->SetDisconnectNotifyStart(timeout);
 }
 
-GGPOErrorCode ggpo_start_spectating(GGPOSession **session,
-                                    GGPOSessionCallbacks *cb,
-                                    const char *game,
-                                    int num_players,
-                                    int input_size,
-                                    int local_port,
-                                    char *host_ip,
-                                    int host_port,
-                                    void *user)
+GGPOErrorCode
+ggpo_start_spectating(GGPOSession **session,
+                     GGPOSessionCallbacks *cb,
+                     GGPOConnectionCallbacks *connection,
+                     const char *game,
+                     int num_players,
+                     int input_size,
+                     GGPOConnectionPlayerID player_id,
+                     void *user_data)
 {
    *session= (GGPOSession *)new SpectatorBackend(cb,
+                                                 connection,
                                                  game,
-                                                 local_port,
                                                  num_players,
                                                  input_size,
-                                                 host_ip,
-                                                 host_port, user);
+                                                 player_id,
+                                                 user_data);
    return GGPO_OK;
 }
 

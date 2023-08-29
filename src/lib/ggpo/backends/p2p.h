@@ -13,11 +13,12 @@
 #include "sync.h"
 #include "backend.h"
 #include "timesync.h"
-#include "network/udp_proto.h"
+#include "network/network_proto.h"
 
-class Peer2PeerBackend : public IQuarkBackend, IPollSink, Udp::Callbacks {
+class Peer2PeerBackend : public IQuarkBackend, IPollSink, Network::Callbacks {
 public:
-   Peer2PeerBackend(GGPOSessionCallbacks *cb, const char *gamename, int localport, int num_players, int input_size, void *user);
+   Peer2PeerBackend(GGPOSessionCallbacks *cb, GGPOConnectionCallbacks *connection, 
+     const char *gamename, int num_players, int input_size, void *user);
    virtual ~Peer2PeerBackend();
 
 
@@ -34,7 +35,7 @@ public:
    virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout);
 
 public:
-   virtual void OnMsg(sockaddr_in &from, UdpMsg *msg, int len);
+   virtual void OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len);
 
 protected:
    GGPOErrorCode PlayerHandleToQueue(GGPOPlayerHandle player, int *queue);
@@ -46,20 +47,20 @@ protected:
    void CheckInitialSync(void);
    int Poll2Players(int current_frame);
    int PollNPlayers(int current_frame);
-   void AddRemotePlayer(char *remoteip, int reportport, int queue);
-   GGPOErrorCode AddSpectator(char *remoteip, int reportport);
+   void AddRemotePlayer(GGPOConnectionPlayerID connectionID, int queue);
+   GGPOErrorCode AddSpectator(GGPOConnectionPlayerID connectionID);
    virtual void OnSyncEvent(Sync::Event &e) { }
-   virtual void OnUdpProtocolEvent(UdpProtocol::Event &e, GGPOPlayerHandle handle);
-   virtual void OnUdpProtocolPeerEvent(UdpProtocol::Event &e, int queue);
-   virtual void OnUdpProtocolSpectatorEvent(UdpProtocol::Event &e, int queue);
+   virtual void OnUdpProtocolEvent(NetworkProtocol::Event &e, GGPOPlayerHandle handle);
+   virtual void OnUdpProtocolPeerEvent(NetworkProtocol::Event &e, int queue);
+   virtual void OnUdpProtocolSpectatorEvent(NetworkProtocol::Event &e, int queue);
 
 protected:
    GGPOSessionCallbacks  _callbacks;
    Poll                  _poll;
    Sync                  _sync;
-   Udp                   _udp;
-   UdpProtocol           *_endpoints;
-   UdpProtocol           _spectators[GGPO_MAX_SPECTATORS];
+   Network               _network;
+   NetworkProtocol      *_endpoints;
+   NetworkProtocol       _spectators[GGPO_MAX_SPECTATORS];
    int                   _num_spectators;
    int                   _input_size;
 
@@ -71,7 +72,7 @@ protected:
    int                   _disconnect_timeout;
    int                   _disconnect_notify_start;
 
-   UdpMsg::connect_status _local_connect_status[UDP_MSG_MAX_PLAYERS];
+   NetworkMsg::connect_status _local_connect_status[UDP_MSG_MAX_PLAYERS];
    void                  *_user_data;
 };
 
