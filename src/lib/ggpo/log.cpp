@@ -11,50 +11,50 @@ static FILE *logfile = NULL;
 
 void LogFlush()
 {
-   if (logfile) {
-      fflush(logfile);
-   }
+	if (logfile) {
+		fflush(logfile);
+	}
 }
 
 static char logbuf[4 * 1024 * 1024];
 
 void Log(const char *fmt, ...)
 {
-   va_list args;
-   va_start(args, fmt);
-   Logv(fmt, args);
-   va_end(args);
+	va_list args;
+	va_start(args, fmt);
+	Logv(fmt, args);
+	va_end(args);
 }
 
 void Logv(const char *fmt, va_list args)
 {
-   if (!getenv("GGPO_LOG") || getenv("GGPO_LOG_IGNORE")) {
-      return;
-   }
-   if (!logfile) {
-      sprintf(logbuf, "log-%d.log", Platform::GetProcessID());
-      logfile = fopen(logbuf, "w");
-   }
-   Logv(logfile, fmt, args);
+	if (!getenv("GGPO_LOG") || getenv("GGPO_LOG_IGNORE")) {
+		return;
+	}
+	if (!logfile) {
+		sprintf(logbuf, "log-%d.log", Platform::GetProcessID());
+		logfile = fopen(logbuf, "w");
+	}
+	Logv(logfile, fmt, args);
 }
 
 void Logv(FILE *fp, const char *fmt, va_list args)
 {
-   if (getenv("ggpo.log.timestamps")) {
-      static int start = 0;
-      int t = 0;
-      if (!start) {
-         start = Platform::GetCurrentTimeMS();
-      } else {
-         t = Platform::GetCurrentTimeMS() - start;
-      }
-      fprintf(fp, "%d.%03d : ", t / 1000, t % 1000);
-   }
+	if (getenv("ggpo.log.timestamps")) {
+		static int start = 0;
+		int t = 0;
+		if (!start) {
+			start = Platform::GetCurrentTimeMS();
+		}
+		else {
+			t = Platform::GetCurrentTimeMS() - start;
+		}
+		fprintf(fp, "%d.%03d : ", t / 1000, t % 1000);
+	}
 
-   vfprintf(fp, fmt, args);
-   fflush(fp);
-   
-   vsprintf(logbuf, fmt, args);
-   //OutputDebugStringA(logbuf);
+	vfprintf(fp, fmt, args);
+	fflush(fp);
+
+	vsprintf(logbuf, fmt, args);
+	// OutputDebugStringA(logbuf);
 }
-

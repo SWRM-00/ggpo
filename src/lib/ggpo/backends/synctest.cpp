@@ -8,210 +8,216 @@
 #include "synctest.h"
 
 SyncTestBackend::SyncTestBackend(GGPOSessionCallbacks *cb,
-                                 char *gamename,
-                                 int frames,
-                                 int num_players, void *user_data) :
-   _sync(NULL),
-   _user_data(user_data)
+    char *gamename,
+    int frames,
+    int num_players,
+    void *user_data)
+    : _sync(NULL), _user_data(user_data)
 {
-   _callbacks = *cb;
-   _num_players = num_players;
-   _check_distance = frames;
-   _last_verified = 0;
-   _rollingback = false;
-   _running = false;
-   _logfp = NULL;
-   _current_input.erase();
-   strcpy(_game, gamename);
+	_callbacks = *cb;
+	_num_players = num_players;
+	_check_distance = frames;
+	_last_verified = 0;
+	_rollingback = false;
+	_running = false;
+	_logfp = NULL;
+	_current_input.erase();
+	strcpy(_game, gamename);
 
-   /*
-    * Initialize the synchronziation layer
-    */
-   Sync::Config config = { 0 };
-   config.callbacks = _callbacks;
-   config.num_prediction_frames = MAX_PREDICTION_FRAMES;
-   _sync.Init(config);
+	/*
+	 * Initialize the synchronziation layer
+	 */
+	Sync::Config config = {0};
+	config.callbacks = _callbacks;
+	config.num_prediction_frames = MAX_PREDICTION_FRAMES;
+	_sync.Init(config);
 
-   /*
-    * Preload the ROM
-    */
-   _callbacks.begin_game(gamename, _user_data);
+	/*
+	 * Preload the ROM
+	 */
+	_callbacks.begin_game(gamename, _user_data);
 }
 
 SyncTestBackend::~SyncTestBackend()
 {
 }
 
-GGPOErrorCode
-SyncTestBackend::DoPoll(int timeout)
+GGPOErrorCode SyncTestBackend::DoPoll(int timeout)
 {
-   if (!_running) {
-      GGPOEvent info;
+	if (!_running) {
+		GGPOEvent info;
 
-      info.code = GGPO_EVENTCODE_RUNNING;
-      _callbacks.on_event(&info, _user_data);
-      _running = true;
-   }
-   return GGPO_OK;
+		info.code = GGPO_EVENTCODE_RUNNING;
+		_callbacks.on_event(&info, _user_data);
+		_running = true;
+	}
+	return GGPO_OK;
 }
 
-GGPOErrorCode
-SyncTestBackend::AddPlayer(GGPOPlayer *player, GGPOPlayerHandle *handle)
+GGPOErrorCode SyncTestBackend::AddPlayer(
+    GGPOPlayer *player, GGPOPlayerHandle *handle)
 {
-   if (player->player_num < 1 || player->player_num > _num_players) {
-      return GGPO_ERRORCODE_PLAYER_OUT_OF_RANGE;
-   }
-   *handle = (GGPOPlayerHandle)(player->player_num - 1);
-   return GGPO_OK;
+	if (player->player_num < 1 || player->player_num > _num_players) {
+		return GGPO_ERRORCODE_PLAYER_OUT_OF_RANGE;
+	}
+	*handle = (GGPOPlayerHandle)(player->player_num - 1);
+	return GGPO_OK;
 }
 
-GGPOErrorCode
-SyncTestBackend::AddLocalInput(GGPOPlayerHandle player, void *values, int size)
+GGPOErrorCode SyncTestBackend::AddLocalInput(
+    GGPOPlayerHandle player, void *values, int size)
 {
-   if (!_running) {
-      return GGPO_ERRORCODE_NOT_SYNCHRONIZED;
-   }
+	if (!_running) {
+		return GGPO_ERRORCODE_NOT_SYNCHRONIZED;
+	}
 
-   int index = (int)player;
-   for (int i = 0; i < size; i++) {
-      _current_input.bits[(index * size) + i] |= ((char *)values)[i];
-   }
-   return GGPO_OK;
+	int index = (int)player;
+	for (int i = 0; i < size; i++) {
+		_current_input.bits[(index * size) + i] |= ((char *)values)[i];
+	}
+	return GGPO_OK;
 }
 
-GGPOErrorCode
-SyncTestBackend::SyncInput(void *values,
-                           int size,
-                           int *disconnect_flags)
+GGPOErrorCode SyncTestBackend::SyncInput(
+    void *values, int size, int *disconnect_flags)
 {
-   BeginLog(false);
-   if (_rollingback) {
-      _last_input = _saved_frames.front().input;
-   } else {
-      if (_sync.GetFrameCount() == 0) {
-         _sync.SaveCurrentFrame();
-      }
-      _last_input = _current_input;
-   }
-   memcpy(values, _last_input.bits, size);
-   if (disconnect_flags) {
-      *disconnect_flags = 0;
-   }
-   return GGPO_OK;
+	BeginLog(false);
+	if (_rollingback) {
+		_last_input = _saved_frames.front().input;
+	}
+	else {
+		if (_sync.GetFrameCount() == 0) {
+			_sync.SaveCurrentFrame();
+		}
+		_last_input = _current_input;
+	}
+	memcpy(values, _last_input.bits, size);
+	if (disconnect_flags) {
+		*disconnect_flags = 0;
+	}
+	return GGPO_OK;
 }
 
-GGPOErrorCode
-SyncTestBackend::IncrementFrame(void)
-{  
-   _sync.IncrementFrame();
-   _current_input.erase();
-   
-   Log("End of frame(%d)...\n", _sync.GetFrameCount());
-   EndLog();
+GGPOErrorCode SyncTestBackend::IncrementFrame(void)
+{
+	_sync.IncrementFrame();
+	_current_input.erase();
 
-   if (_rollingback) {
-      return GGPO_OK;
-   }
+	Log("End of frame(%d)...\n", _sync.GetFrameCount());
+	EndLog();
 
-   int frame = _sync.GetFrameCount();
-   // Hold onto the current frame in our queue of saved states.  We'll need
-   // the checksum later to verify that our replay of the same frame got the
-   // same results.
-   SavedInfo info;
-   info.frame = frame;
-   info.input = _last_input;
-   info.cbuf = _sync.GetLastSavedFrame().cbuf;
-   info.buf = (char *)malloc(info.cbuf);
-   memcpy(info.buf, _sync.GetLastSavedFrame().buf, info.cbuf);
-   info.checksum = _sync.GetLastSavedFrame().checksum;
-   _saved_frames.push(info);
+	if (_rollingback) {
+		return GGPO_OK;
+	}
 
-   if (frame - _last_verified == _check_distance) {
-      // We've gone far enough ahead and should now start replaying frames.
-      // Load the last verified frame and set the rollback flag to true.
-      _sync.LoadFrame(_last_verified);
+	int frame = _sync.GetFrameCount();
+	// Hold onto the current frame in our queue of saved states.  We'll need
+	// the checksum later to verify that our replay of the same frame got the
+	// same results.
+	SavedInfo info;
+	info.frame = frame;
+	info.input = _last_input;
+	info.cbuf = _sync.GetLastSavedFrame().cbuf;
+	info.buf = (char *)malloc(info.cbuf);
+	memcpy(info.buf, _sync.GetLastSavedFrame().buf, info.cbuf);
+	info.checksum = _sync.GetLastSavedFrame().checksum;
+	_saved_frames.push(info);
 
-      _rollingback = true;
-      while(!_saved_frames.empty()) {
-         _callbacks.advance_frame(0, _user_data);
+	if (frame - _last_verified == _check_distance) {
+		// We've gone far enough ahead and should now start replaying frames.
+		// Load the last verified frame and set the rollback flag to true.
+		_sync.LoadFrame(_last_verified);
 
-         // Verify that the checksumn of this frame is the same as the one in our
-         // list.
-         SavedInfo info = _saved_frames.front();
-         _saved_frames.pop();
+		_rollingback = true;
+		while (!_saved_frames.empty()) {
+			_callbacks.advance_frame(0, _user_data);
 
-         if (info.frame != _sync.GetFrameCount()) {
-            RaiseSyncError("Frame number %d does not match saved frame number %d", info.frame, frame);
-         }
-         int checksum = _sync.GetLastSavedFrame().checksum;
-         if (info.checksum != checksum) {
-            LogSaveStates(info);
-            RaiseSyncError("Checksum for frame %d does not match saved (%d != %d)", frame, checksum, info.checksum);
-         }
-         printf("Checksum %08d for frame %d matches.\n", checksum, info.frame);
-         free(info.buf);
-      }
-      _last_verified = frame;
-      _rollingback = false;
-   }
+			// Verify that the checksumn of this frame is the same as the one in
+			// our list.
+			SavedInfo info = _saved_frames.front();
+			_saved_frames.pop();
 
-   return GGPO_OK;
+			if (info.frame != _sync.GetFrameCount()) {
+				RaiseSyncError(
+				    "Frame number %d does not match saved frame number %d",
+				    info.frame,
+				    frame);
+			}
+			int checksum = _sync.GetLastSavedFrame().checksum;
+			if (info.checksum != checksum) {
+				LogSaveStates(info);
+				RaiseSyncError(
+				    "Checksum for frame %d does not match saved (%d != %d)",
+				    frame,
+				    checksum,
+				    info.checksum);
+			}
+			printf(
+			    "Checksum %08d for frame %d matches.\n", checksum, info.frame);
+			free(info.buf);
+		}
+		_last_verified = frame;
+		_rollingback = false;
+	}
+
+	return GGPO_OK;
 }
 
-void
-SyncTestBackend::RaiseSyncError(const char *fmt, ...)
+void SyncTestBackend::RaiseSyncError(const char *fmt, ...)
 {
-   char buf[1024];
-   va_list args;
-   va_start(args, fmt);
-   vsprintf(buf, fmt, args);
-   va_end(args);
+	char buf[1024];
+	va_list args;
+	va_start(args, fmt);
+	vsprintf(buf, fmt, args);
+	va_end(args);
 
-   puts(buf);
-   EndLog();
-   DebugBreak();
+	puts(buf);
+	EndLog();
+	DebugBreak();
 }
 
-GGPOErrorCode
-SyncTestBackend::Logv(char *fmt, va_list list)
+GGPOErrorCode SyncTestBackend::Logv(char *fmt, va_list list)
 {
-   if (_logfp) {
-      vfprintf(_logfp, fmt, list);
-   }
-   return GGPO_OK;
+	if (_logfp) {
+		vfprintf(_logfp, fmt, list);
+	}
+	return GGPO_OK;
 }
 
-void
-SyncTestBackend::BeginLog(int saving)
+void SyncTestBackend::BeginLog(int saving)
 {
-   EndLog();
+	EndLog();
 
-   char filename[MAX_PATH];
-   Platform::CreateDirectory("synclogs", NULL);
-   sprintf(filename, "synclogs\\%s-%04d-%s.log",
-           saving ? "state" : "log",
-           _sync.GetFrameCount(),
-           _rollingback ? "replay" : "original");
+	char filename[MAX_PATH];
+	Platform::CreateDirectory("synclogs", NULL);
+	sprintf(filename,
+	    "synclogs\\%s-%04d-%s.log",
+	    saving ? "state" : "log",
+	    _sync.GetFrameCount(),
+	    _rollingback ? "replay" : "original");
 
-   _logfp = fopen(filename, "w");
+	_logfp = fopen(filename, "w");
 }
 
-void
-SyncTestBackend::EndLog()
+void SyncTestBackend::EndLog()
 {
-   if (_logfp) {
-      fprintf(_logfp, "Closing log file.\n");
-      fclose(_logfp);
-      _logfp = NULL;
-   }
+	if (_logfp) {
+		fprintf(_logfp, "Closing log file.\n");
+		fclose(_logfp);
+		_logfp = NULL;
+	}
 }
-void
-SyncTestBackend::LogSaveStates(SavedInfo &info)
+void SyncTestBackend::LogSaveStates(SavedInfo &info)
 {
-   char filename[MAX_PATH];
-   sprintf(filename, "synclogs\\state-%04d-original.log", _sync.GetFrameCount());
-   _callbacks.log_game_state(filename, (unsigned char *)info.buf, info.cbuf, _user_data);
+	char filename[MAX_PATH];
+	sprintf(
+	    filename, "synclogs\\state-%04d-original.log", _sync.GetFrameCount());
+	_callbacks.log_game_state(
+	    filename, (unsigned char *)info.buf, info.cbuf, _user_data);
 
-   sprintf(filename, "synclogs\\state-%04d-replay.log", _sync.GetFrameCount());
-   _callbacks.log_game_state(filename, _sync.GetLastSavedFrame().buf, _sync.GetLastSavedFrame().cbuf, _user_data);
+	sprintf(filename, "synclogs\\state-%04d-replay.log", _sync.GetFrameCount());
+	_callbacks.log_game_state(filename,
+	    _sync.GetLastSavedFrame().buf,
+	    _sync.GetLastSavedFrame().cbuf,
+	    _user_data);
 }

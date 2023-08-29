@@ -8,51 +8,56 @@
 #ifndef _UDP_H
 #define _UDP_H
 
-#include "poll.h"
-#include "network_msg.h"
 #include "ggponet.h"
+#include "network_msg.h"
+#include "poll.h"
 #include "ring_buffer.h"
 
-#define MAX_UDP_ENDPOINTS     16
+#define MAX_UDP_ENDPOINTS 16
 
 static const int MAX_UDP_PACKET_SIZE = 4096;
 
-class Network : public IPollSink
-{
+class Network : public IPollSink {
 public:
-   struct Stats {
-      int      bytes_sent;
-      int      packets_sent;
-      float    kbps_sent;
-   };
+	struct Stats {
+		int bytes_sent;
+		int packets_sent;
+		float kbps_sent;
+	};
 
-   struct Callbacks {
-      virtual ~Callbacks() { }
-      virtual void OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len) = 0;
-   };
-
+	struct Callbacks {
+		virtual ~Callbacks() {}
+		virtual void OnMsg(
+		    GGPOConnectionPlayerID from, NetworkMsg *msg, int len) = 0;
+	};
 
 protected:
-   void Log(const char *fmt, ...);
+	void Log(const char *fmt, ...);
 
 public:
-   Network();
+	Network();
 
-   void Init(Poll *p, Callbacks *callbacks, GGPOConnectionCallbacks *connection_callbacks);
-   void SendTo(char *buffer, int len, int flags, GGPOConnectionPlayerID dst, int destlen);
+	void Init(Poll *p,
+	    Callbacks *callbacks,
+	    GGPOConnectionCallbacks *connection_callbacks);
+	void SendTo(char *buffer,
+	    int len,
+	    int flags,
+	    GGPOConnectionPlayerID dst,
+	    int destlen);
 
-   virtual bool OnLoopPoll(void *cookie);
+	virtual bool OnLoopPoll(void *cookie);
 
 public:
-   ~Network(void);
+	~Network(void);
 
 protected:
-   // Remote network.
-   GGPOConnectionCallbacks _connection_callbacks;
+	// Remote network.
+	GGPOConnectionCallbacks _connection_callbacks;
 
-   // state management
-   Callbacks      *_callbacks;
-   Poll           *_poll;
+	// state management
+	Callbacks *_callbacks;
+	Poll *_poll;
 };
 
 #endif

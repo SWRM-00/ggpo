@@ -8,54 +8,83 @@
 #ifndef _SPECTATOR_H
 #define _SPECTATOR_H
 
-#include "types.h"
+#include "backend.h"
+#include "network/network_proto.h"
 #include "poll.h"
 #include "sync.h"
-#include "backend.h"
 #include "timesync.h"
-#include "network/network_proto.h"
+#include "types.h"
 
-#define SPECTATOR_FRAME_BUFFER_SIZE    64
+#define SPECTATOR_FRAME_BUFFER_SIZE 64
 
 class SpectatorBackend : public IQuarkBackend, IPollSink, Network::Callbacks {
 public:
-   SpectatorBackend(GGPOSessionCallbacks *cb, GGPOConnectionCallbacks *connection, const char *gamename, 
-     int num_players, int input_size, GGPOConnectionPlayerID player_id, void *user);
-   virtual ~SpectatorBackend();
-
-
-public:
-   virtual GGPOErrorCode DoPoll(int timeout);
-   virtual GGPOErrorCode AddPlayer(GGPOPlayer *player, GGPOPlayerHandle *handle) { return GGPO_ERRORCODE_UNSUPPORTED; }
-   virtual GGPOErrorCode AddLocalInput(GGPOPlayerHandle player, void *values, int size) { return GGPO_OK; }
-   virtual GGPOErrorCode SyncInput(void *values, int size, int *disconnect_flags);
-   virtual GGPOErrorCode IncrementFrame(void);
-   virtual GGPOErrorCode DisconnectPlayer(GGPOPlayerHandle handle) { return GGPO_ERRORCODE_UNSUPPORTED; }
-   virtual GGPOErrorCode GetNetworkStats(GGPONetworkStats *stats, GGPOPlayerHandle handle) { return GGPO_ERRORCODE_UNSUPPORTED; }
-   virtual GGPOErrorCode SetFrameDelay(GGPOPlayerHandle player, int delay) { return GGPO_ERRORCODE_UNSUPPORTED; }
-   virtual GGPOErrorCode SetDisconnectTimeout(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
-   virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
+	SpectatorBackend(GGPOSessionCallbacks *cb,
+	    GGPOConnectionCallbacks *connection,
+	    const char *gamename,
+	    int num_players,
+	    int input_size,
+	    GGPOConnectionPlayerID player_id,
+	    void *user);
+	virtual ~SpectatorBackend();
 
 public:
-   virtual void OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len);
+	virtual GGPOErrorCode DoPoll(int timeout);
+	virtual GGPOErrorCode AddPlayer(
+	    GGPOPlayer *player, GGPOPlayerHandle *handle)
+	{
+		return GGPO_ERRORCODE_UNSUPPORTED;
+	}
+	virtual GGPOErrorCode AddLocalInput(
+	    GGPOPlayerHandle player, void *values, int size)
+	{
+		return GGPO_OK;
+	}
+	virtual GGPOErrorCode SyncInput(
+	    void *values, int size, int *disconnect_flags);
+	virtual GGPOErrorCode IncrementFrame(void);
+	virtual GGPOErrorCode DisconnectPlayer(GGPOPlayerHandle handle)
+	{
+		return GGPO_ERRORCODE_UNSUPPORTED;
+	}
+	virtual GGPOErrorCode GetNetworkStats(
+	    GGPONetworkStats *stats, GGPOPlayerHandle handle)
+	{
+		return GGPO_ERRORCODE_UNSUPPORTED;
+	}
+	virtual GGPOErrorCode SetFrameDelay(GGPOPlayerHandle player, int delay)
+	{
+		return GGPO_ERRORCODE_UNSUPPORTED;
+	}
+	virtual GGPOErrorCode SetDisconnectTimeout(int timeout)
+	{
+		return GGPO_ERRORCODE_UNSUPPORTED;
+	}
+	virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout)
+	{
+		return GGPO_ERRORCODE_UNSUPPORTED;
+	}
+
+public:
+	virtual void OnMsg(GGPOConnectionPlayerID from, NetworkMsg *msg, int len);
 
 protected:
-   void PollUdpProtocolEvents(void);
-   void CheckInitialSync(void);
+	void PollUdpProtocolEvents(void);
+	void CheckInitialSync(void);
 
-   void OnUdpProtocolEvent(NetworkProtocol::Event &e);
+	void OnUdpProtocolEvent(NetworkProtocol::Event &e);
 
 protected:
-   GGPOSessionCallbacks  _callbacks;
-   Poll                  _poll;
-   Network               _network;
-   NetworkProtocol       _host;
-   bool                  _synchronizing;
-   int                   _input_size;
-   int                   _num_players;
-   int                   _next_input_to_send;
-   GameInput             _inputs[SPECTATOR_FRAME_BUFFER_SIZE];
-   void                 *_user_data;
+	GGPOSessionCallbacks _callbacks;
+	Poll _poll;
+	Network _network;
+	NetworkProtocol _host;
+	bool _synchronizing;
+	int _input_size;
+	int _num_players;
+	int _next_input_to_send;
+	GameInput _inputs[SPECTATOR_FRAME_BUFFER_SIZE];
+	void *_user_data;
 };
 
 #endif

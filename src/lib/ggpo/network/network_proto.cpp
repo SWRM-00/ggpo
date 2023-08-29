@@ -5,754 +5,786 @@
  * in the LICENSE file.
  */
 
-#include "types.h"
 #include "network_proto.h"
 #include "bitvector.h"
+#include "types.h"
 
-static const int UDP_HEADER_SIZE = 28;     /* Size of IP + UDP headers */
+static const int UDP_HEADER_SIZE = 28; /* Size of IP + UDP headers */
 static const int NUM_SYNC_PACKETS = 5;
 static const int SYNC_RETRY_INTERVAL = 2000;
 static const int SYNC_FIRST_RETRY_INTERVAL = 500;
 static const int RUNNING_RETRY_INTERVAL = 200;
-static const int KEEP_ALIVE_INTERVAL    = 200;
+static const int KEEP_ALIVE_INTERVAL = 200;
 static const int QUALITY_REPORT_INTERVAL = 1000;
-static const int NETWORK_STATS_INTERVAL  = 1000;
+static const int NETWORK_STATS_INTERVAL = 1000;
 static const int UDP_SHUTDOWN_TIMER = 5000;
 static const int MAX_SEQ_DISTANCE = (1 << 15);
 
-NetworkProtocol::NetworkProtocol() :
-   _local_frame_advantage(0),
-   _remote_frame_advantage(0),
-   _queue(-1),
-   _magic_number(0),
-   _remote_magic_number(0),
-   _packets_sent(0),
-   _bytes_sent(0),
-   _stats_start_time(0),
-   _last_send_time(0),
-   _shutdown_timeout(0),
-   _disconnect_timeout(0),
-   _disconnect_notify_start(0),
-   _disconnect_notify_sent(false),
-   _disconnect_event_sent(false),
-   _connected(false),
-   _next_send_seq(0),
-   _next_recv_seq(0),
-   _network(NULL)
+NetworkProtocol::NetworkProtocol()
+    : _local_frame_advantage(0), _remote_frame_advantage(0), _queue(-1),
+      _magic_number(0), _remote_magic_number(0), _packets_sent(0),
+      _bytes_sent(0), _stats_start_time(0), _last_send_time(0),
+      _shutdown_timeout(0), _disconnect_timeout(0), _disconnect_notify_start(0),
+      _disconnect_notify_sent(false), _disconnect_event_sent(false),
+      _connected(false), _next_send_seq(0), _next_recv_seq(0), _network(NULL)
 {
-   _last_sent_input.init(-1, NULL, 1);
-   _last_received_input.init(-1, NULL, 1);
-   _last_acked_input.init(-1, NULL, 1);
+	_last_sent_input.init(-1, NULL, 1);
+	_last_received_input.init(-1, NULL, 1);
+	_last_acked_input.init(-1, NULL, 1);
 
-   memset(&_state, 0, sizeof _state);
-   memset(_peer_connect_status, 0, sizeof(_peer_connect_status));
-   for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
-      _peer_connect_status[i].last_frame = -1;
-   }
-   memset(&_peer_addr, 0, sizeof _peer_addr);
-   _oo_packet.msg = NULL;
+	memset(&_state, 0, sizeof _state);
+	memset(_peer_connect_status, 0, sizeof(_peer_connect_status));
+	for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
+		_peer_connect_status[i].last_frame = -1;
+	}
+	memset(&_peer_addr, 0, sizeof _peer_addr);
+	_oo_packet.msg = NULL;
 
-   char *delay = getenv("ggpo.network.delay");
-   char *oop_pct = getenv("ggpo.oop.percent");
-   _send_latency = delay ? atoi(delay) : 0;
-   _oop_percent = oop_pct ? atoi(oop_pct) : 0;
+	char *delay = getenv("ggpo.network.delay");
+	char *oop_pct = getenv("ggpo.oop.percent");
+	_send_latency = delay ? atoi(delay) : 0;
+	_oop_percent = oop_pct ? atoi(oop_pct) : 0;
 }
 
 NetworkProtocol::~NetworkProtocol()
 {
-   ClearSendQueue();
+	ClearSendQueue();
 }
 
-void
-NetworkProtocol::Init(Network *network,
-                  Poll &poll,
-                  int queue,
-                  GGPOConnectionPlayerID player_id,
-                  NetworkMsg::connect_status *status)
-{  
-   _network = network;
-   _queue = queue;
-   _local_connect_status = status;
-
-   _peer_addr = player_id;
-   
-   do {
-      _magic_number = rand();
-   } while (_magic_number == 0);
-   poll.RegisterLoop(this);
-}
-
-void
-NetworkProtocol::SendInput(GameInput &input)
+void NetworkProtocol::Init(Network *network,
+    Poll &poll,
+    int queue,
+    GGPOConnectionPlayerID player_id,
+    NetworkMsg::connect_status *status)
 {
-   if (_network) {
-      if (_current_state == Running) {
-         /*
-          * Check to see if this is a good time to adjust for the rift...
-          */
-         _timesync.advance_frame(input, _local_frame_advantage, _remote_frame_advantage);
+	_network = network;
+	_queue = queue;
+	_local_connect_status = status;
 
-         /*
-          * Save this input packet
-          *
-          * XXX: This queue may fill up for spectators who do not ack input packets in a timely
-          * manner.  When this happens, we can either resize the queue (ug) or disconnect them
-          * (better, but still ug).  For the meantime, make this queue really big to decrease
-          * the odds of this happening...
-          */
-         _pending_output.push(input);
-      }
-      SendPendingOutput();
-   }  
+	_peer_addr = player_id;
+
+	do {
+		_magic_number = rand();
+	} while (_magic_number == 0);
+	poll.RegisterLoop(this);
 }
 
-void
-NetworkProtocol::SendPendingOutput()
+void NetworkProtocol::SendInput(GameInput &input)
 {
-   NetworkMsg *msg = new NetworkMsg(NetworkMsg::Input);
-   int i, j, offset = 0;
-   uint8 *bits;
-   GameInput last;
+	if (_network) {
+		if (_current_state == Running) {
+			/*
+			 * Check to see if this is a good time to adjust for the rift...
+			 */
+			_timesync.advance_frame(
+			    input, _local_frame_advantage, _remote_frame_advantage);
 
-   if (_pending_output.size()) {
-      last = _last_acked_input;
-      bits = msg->u.input.bits;
-
-      msg->u.input.start_frame = _pending_output.front().frame;
-      msg->u.input.input_size = _pending_output.front().size;
-
-      ASSERT(last.frame == -1 || last.frame + 1 == msg->u.input.start_frame);
-      for (j = 0; j < _pending_output.size(); j++) {
-         GameInput &current = _pending_output.item(j);
-         if (memcmp(current.bits, last.bits, current.size) != 0) {
-            ASSERT((GAMEINPUT_MAX_BYTES * GAMEINPUT_MAX_PLAYERS * 8) < (1 << BITVECTOR_NIBBLE_SIZE));
-            for (i = 0; i < current.size * 8; i++) {
-               ASSERT(i < (1 << BITVECTOR_NIBBLE_SIZE));
-               if (current.value(i) != last.value(i)) {
-                  BitVector_SetBit(msg->u.input.bits, &offset);
-                  (current.value(i) ? BitVector_SetBit : BitVector_ClearBit)(bits, &offset);
-                  BitVector_WriteNibblet(bits, i, &offset);
-               }
-            }
-         }
-         BitVector_ClearBit(msg->u.input.bits, &offset);
-         last = _last_sent_input = current;
-      }
-   } else {
-      msg->u.input.start_frame = 0;
-      msg->u.input.input_size = 0;
-   }
-   msg->u.input.ack_frame = _last_received_input.frame;
-   msg->u.input.num_bits = offset;
-
-   msg->u.input.disconnect_requested = _current_state == Disconnected;
-   if (_local_connect_status) {
-      memcpy(msg->u.input.peer_connect_status, _local_connect_status, sizeof(NetworkMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
-   } else {
-      memset(msg->u.input.peer_connect_status, 0, sizeof(NetworkMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
-   }
-
-   ASSERT(offset < MAX_COMPRESSED_BITS);
-
-   SendMsg(msg);
+			/*
+			 * Save this input packet
+			 *
+			 * XXX: This queue may fill up for spectators who do not ack input
+			 * packets in a timely manner.  When this happens, we can either
+			 * resize the queue (ug) or disconnect them (better, but still ug).
+			 * For the meantime, make this queue really big to decrease the odds
+			 * of this happening...
+			 */
+			_pending_output.push(input);
+		}
+		SendPendingOutput();
+	}
 }
 
-void
-NetworkProtocol::SendInputAck()
+void NetworkProtocol::SendPendingOutput()
 {
-   NetworkMsg *msg = new NetworkMsg(NetworkMsg::InputAck);
-   msg->u.input_ack.ack_frame = _last_received_input.frame;
-   SendMsg(msg);
+	NetworkMsg *msg = new NetworkMsg(NetworkMsg::Input);
+	int i, j, offset = 0;
+	uint8 *bits;
+	GameInput last;
+
+	if (_pending_output.size()) {
+		last = _last_acked_input;
+		bits = msg->u.input.bits;
+
+		msg->u.input.start_frame = _pending_output.front().frame;
+		msg->u.input.input_size = _pending_output.front().size;
+
+		ASSERT(last.frame == -1 || last.frame + 1 == msg->u.input.start_frame);
+		for (j = 0; j < _pending_output.size(); j++) {
+			GameInput &current = _pending_output.item(j);
+			if (memcmp(current.bits, last.bits, current.size) != 0) {
+				ASSERT((GAMEINPUT_MAX_BYTES * GAMEINPUT_MAX_PLAYERS * 8) <
+				       (1 << BITVECTOR_NIBBLE_SIZE));
+				for (i = 0; i < current.size * 8; i++) {
+					ASSERT(i < (1 << BITVECTOR_NIBBLE_SIZE));
+					if (current.value(i) != last.value(i)) {
+						BitVector_SetBit(msg->u.input.bits, &offset);
+						(current.value(i) ? BitVector_SetBit
+						                  : BitVector_ClearBit)(bits, &offset);
+						BitVector_WriteNibblet(bits, i, &offset);
+					}
+				}
+			}
+			BitVector_ClearBit(msg->u.input.bits, &offset);
+			last = _last_sent_input = current;
+		}
+	}
+	else {
+		msg->u.input.start_frame = 0;
+		msg->u.input.input_size = 0;
+	}
+	msg->u.input.ack_frame = _last_received_input.frame;
+	msg->u.input.num_bits = offset;
+
+	msg->u.input.disconnect_requested = _current_state == Disconnected;
+	if (_local_connect_status) {
+		memcpy(msg->u.input.peer_connect_status,
+		    _local_connect_status,
+		    sizeof(NetworkMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
+	}
+	else {
+		memset(msg->u.input.peer_connect_status,
+		    0,
+		    sizeof(NetworkMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
+	}
+
+	ASSERT(offset < MAX_COMPRESSED_BITS);
+
+	SendMsg(msg);
 }
 
-bool
-NetworkProtocol::GetEvent(NetworkProtocol::Event &e)
+void NetworkProtocol::SendInputAck()
 {
-   if (_event_queue.size() == 0) {
-      return false;
-   }
-   e = _event_queue.front();
-   _event_queue.pop();
-   return true;
+	NetworkMsg *msg = new NetworkMsg(NetworkMsg::InputAck);
+	msg->u.input_ack.ack_frame = _last_received_input.frame;
+	SendMsg(msg);
 }
 
-
-bool
-NetworkProtocol::OnLoopPoll(void *cookie)
+bool NetworkProtocol::GetEvent(NetworkProtocol::Event &e)
 {
-   if (!_network) {
-      return true;
-   }
-
-   unsigned int now = Platform::GetCurrentTimeMS();
-   unsigned int next_interval;
-
-   PumpSendQueue();
-   switch (_current_state) {
-   case Syncing:
-      next_interval = (_state.sync.roundtrips_remaining == NUM_SYNC_PACKETS) ? SYNC_FIRST_RETRY_INTERVAL : SYNC_RETRY_INTERVAL;
-      if (_last_send_time && _last_send_time + next_interval < now) {
-         Log("No luck syncing after %d ms... Re-queueing sync packet.\n", next_interval);
-         SendSyncRequest();
-      }
-      break;
-
-   case Running:
-      // xxx: rig all this up with a timer wrapper
-      if (!_state.running.last_input_packet_recv_time || _state.running.last_input_packet_recv_time + RUNNING_RETRY_INTERVAL < now) {
-         Log("Haven't exchanged packets in a while (last received:%d  last sent:%d).  Resending.\n", _last_received_input.frame, _last_sent_input.frame);
-         SendPendingOutput();
-         _state.running.last_input_packet_recv_time = now;
-      }
-
-      if (!_state.running.last_quality_report_time || _state.running.last_quality_report_time + QUALITY_REPORT_INTERVAL < now) {
-         NetworkMsg *msg = new NetworkMsg(NetworkMsg::QualityReport);
-         msg->u.quality_report.ping = Platform::GetCurrentTimeMS();
-         msg->u.quality_report.frame_advantage = _local_frame_advantage;
-         SendMsg(msg);
-         _state.running.last_quality_report_time = now;
-      }
-
-      if (!_state.running.last_network_stats_interval || _state.running.last_network_stats_interval + NETWORK_STATS_INTERVAL < now) {
-         UpdateNetworkStats();
-         _state.running.last_network_stats_interval =  now;
-      }
-
-      if (_last_send_time && _last_send_time + KEEP_ALIVE_INTERVAL < now) {
-         Log("Sending keep alive packet\n");
-         SendMsg(new NetworkMsg(NetworkMsg::KeepAlive));
-      }
-
-      if (_disconnect_timeout && _disconnect_notify_start && 
-         !_disconnect_notify_sent && (_last_recv_time + _disconnect_notify_start < now)) {
-         Log("Endpoint has stopped receiving packets for %d ms.  Sending notification.\n", _disconnect_notify_start);
-         Event e(Event::NetworkInterrupted);
-         e.u.network_interrupted.disconnect_timeout = _disconnect_timeout - _disconnect_notify_start;
-         QueueEvent(e);
-         _disconnect_notify_sent = true;
-      }
-
-      if (_disconnect_timeout && (_last_recv_time + _disconnect_timeout < now)) {
-         if (!_disconnect_event_sent) {
-            Log("Endpoint has stopped receiving packets for %d ms.  Disconnecting.\n", _disconnect_timeout);
-            QueueEvent(Event(Event::Disconnected));
-            _disconnect_event_sent = true;
-         }
-      }
-      break;
-
-   case Disconnected:
-      if (_shutdown_timeout < now) {
-         Log("Shutting down connection.\n");
-         _network = NULL;
-         _shutdown_timeout = 0;
-      }
-
-   }
-
-
-   return true;
+	if (_event_queue.size() == 0) {
+		return false;
+	}
+	e = _event_queue.front();
+	_event_queue.pop();
+	return true;
 }
 
-void
-NetworkProtocol::Disconnect()
+bool NetworkProtocol::OnLoopPoll(void *cookie)
 {
-   _current_state = Disconnected;
-   _shutdown_timeout = Platform::GetCurrentTimeMS() + UDP_SHUTDOWN_TIMER;
+	if (!_network) {
+		return true;
+	}
+
+	unsigned int now = Platform::GetCurrentTimeMS();
+	unsigned int next_interval;
+
+	PumpSendQueue();
+	switch (_current_state) {
+		case Syncing:
+			next_interval =
+			    (_state.sync.roundtrips_remaining == NUM_SYNC_PACKETS)
+			        ? SYNC_FIRST_RETRY_INTERVAL
+			        : SYNC_RETRY_INTERVAL;
+			if (_last_send_time && _last_send_time + next_interval < now) {
+				Log("No luck syncing after %d ms... Re-queueing sync packet.\n",
+				    next_interval);
+				SendSyncRequest();
+			}
+			break;
+
+		case Running:
+			// xxx: rig all this up with a timer wrapper
+			if (!_state.running.last_input_packet_recv_time ||
+			    _state.running.last_input_packet_recv_time +
+			            RUNNING_RETRY_INTERVAL <
+			        now) {
+				Log("Haven't exchanged packets in a while (last received:%d  "
+				    "last sent:%d).  Resending.\n",
+				    _last_received_input.frame,
+				    _last_sent_input.frame);
+				SendPendingOutput();
+				_state.running.last_input_packet_recv_time = now;
+			}
+
+			if (!_state.running.last_quality_report_time ||
+			    _state.running.last_quality_report_time +
+			            QUALITY_REPORT_INTERVAL <
+			        now) {
+				NetworkMsg *msg = new NetworkMsg(NetworkMsg::QualityReport);
+				msg->u.quality_report.ping = Platform::GetCurrentTimeMS();
+				msg->u.quality_report.frame_advantage = _local_frame_advantage;
+				SendMsg(msg);
+				_state.running.last_quality_report_time = now;
+			}
+
+			if (!_state.running.last_network_stats_interval ||
+			    _state.running.last_network_stats_interval +
+			            NETWORK_STATS_INTERVAL <
+			        now) {
+				UpdateNetworkStats();
+				_state.running.last_network_stats_interval = now;
+			}
+
+			if (_last_send_time &&
+			    _last_send_time + KEEP_ALIVE_INTERVAL < now) {
+				Log("Sending keep alive packet\n");
+				SendMsg(new NetworkMsg(NetworkMsg::KeepAlive));
+			}
+
+			if (_disconnect_timeout && _disconnect_notify_start &&
+			    !_disconnect_notify_sent &&
+			    (_last_recv_time + _disconnect_notify_start < now)) {
+				Log("Endpoint has stopped receiving packets for %d ms.  "
+				    "Sending notification.\n",
+				    _disconnect_notify_start);
+				Event e(Event::NetworkInterrupted);
+				e.u.network_interrupted.disconnect_timeout =
+				    _disconnect_timeout - _disconnect_notify_start;
+				QueueEvent(e);
+				_disconnect_notify_sent = true;
+			}
+
+			if (_disconnect_timeout &&
+			    (_last_recv_time + _disconnect_timeout < now)) {
+				if (!_disconnect_event_sent) {
+					Log("Endpoint has stopped receiving packets for %d ms.  "
+					    "Disconnecting.\n",
+					    _disconnect_timeout);
+					QueueEvent(Event(Event::Disconnected));
+					_disconnect_event_sent = true;
+				}
+			}
+			break;
+
+		case Disconnected:
+			if (_shutdown_timeout < now) {
+				Log("Shutting down connection.\n");
+				_network = NULL;
+				_shutdown_timeout = 0;
+			}
+	}
+
+	return true;
 }
 
-void
-NetworkProtocol::SendSyncRequest()
+void NetworkProtocol::Disconnect()
 {
-   _state.sync.random = rand() & 0xFFFF;
-   NetworkMsg *msg = new NetworkMsg(NetworkMsg::SyncRequest);
-   msg->u.sync_request.random_request = _state.sync.random;
-   SendMsg(msg);
+	_current_state = Disconnected;
+	_shutdown_timeout = Platform::GetCurrentTimeMS() + UDP_SHUTDOWN_TIMER;
 }
 
-void
-NetworkProtocol::SendMsg(NetworkMsg *msg)
+void NetworkProtocol::SendSyncRequest()
 {
-   LogMsg("send", msg);
-
-   _packets_sent++;
-   _last_send_time = Platform::GetCurrentTimeMS();
-   _bytes_sent += msg->PacketSize();
-
-   msg->hdr.magic = _magic_number;
-   msg->hdr.sequence_number = _next_send_seq++;
-
-   _send_queue.push(QueueEntry(Platform::GetCurrentTimeMS(), _peer_addr, msg));
-   PumpSendQueue();
+	_state.sync.random = rand() & 0xFFFF;
+	NetworkMsg *msg = new NetworkMsg(NetworkMsg::SyncRequest);
+	msg->u.sync_request.random_request = _state.sync.random;
+	SendMsg(msg);
 }
 
-bool
-NetworkProtocol::HandlesMsg(GGPOConnectionPlayerID from, NetworkMsg *msg)
+void NetworkProtocol::SendMsg(NetworkMsg *msg)
 {
-   if (!_network) 
-      return false;
-   
-   return _peer_addr == from; 
+	LogMsg("send", msg);
+
+	_packets_sent++;
+	_last_send_time = Platform::GetCurrentTimeMS();
+	_bytes_sent += msg->PacketSize();
+
+	msg->hdr.magic = _magic_number;
+	msg->hdr.sequence_number = _next_send_seq++;
+
+	_send_queue.push(QueueEntry(Platform::GetCurrentTimeMS(), _peer_addr, msg));
+	PumpSendQueue();
 }
 
-void
-NetworkProtocol::OnMsg(NetworkMsg *msg, int len)
+bool NetworkProtocol::HandlesMsg(GGPOConnectionPlayerID from, NetworkMsg *msg)
 {
-   bool handled = false;
-   typedef bool (NetworkProtocol::*DispatchFn)(NetworkMsg *msg, int len);
-   static const DispatchFn table[] = {
-      &NetworkProtocol::OnInvalid,             /* Invalid */
-      &NetworkProtocol::OnSyncRequest,         /* SyncRequest */
-      &NetworkProtocol::OnSyncReply,           /* SyncReply */
-      &NetworkProtocol::OnInput,               /* Input */
-      &NetworkProtocol::OnQualityReport,       /* QualityReport */
-      &NetworkProtocol::OnQualityReply,        /* QualityReply */
-      &NetworkProtocol::OnKeepAlive,           /* KeepAlive */
-      &NetworkProtocol::OnInputAck,            /* InputAck */
-   };
+	if (!_network)
+		return false;
 
-   // filter out messages that don't match what we expect
-   int seq = msg->hdr.sequence_number;
-   if (msg->hdr.type != NetworkMsg::SyncRequest &&
-       msg->hdr.type != NetworkMsg::SyncReply) {
-      if (msg->hdr.magic != _remote_magic_number) {
-         LogMsg("recv rejecting", msg);
-         return;
-      }
-
-      // filter out out-of-order packets
-      uint16 skipped = seq - _next_recv_seq;
-      // Log("checking sequence number -> next - seq : %d - %d = %d\n", seq, _next_recv_seq, skipped);
-      if (skipped > MAX_SEQ_DISTANCE) {
-         Log("dropping out of order packet (seq: %d, last seq:%d)\n", seq, _next_recv_seq);
-         return;
-      }
-   }
-
-   _next_recv_seq = seq;
-   LogMsg("recv", msg);
-   if (msg->hdr.type >= ARRAY_SIZE(table)) {
-      OnInvalid(msg, len);
-   } else {
-      handled = (this->*(table[msg->hdr.type]))(msg, len);
-   }
-   if (handled) {
-      _last_recv_time = Platform::GetCurrentTimeMS();
-      if (_disconnect_notify_sent && _current_state == Running) {
-         QueueEvent(Event(Event::NetworkResumed));   
-         _disconnect_notify_sent = false;
-      }
-   }
+	return _peer_addr == from;
 }
 
-void
-NetworkProtocol::UpdateNetworkStats(void)
+void NetworkProtocol::OnMsg(NetworkMsg *msg, int len)
 {
-   int now = Platform::GetCurrentTimeMS();
+	bool handled = false;
+	typedef bool (NetworkProtocol::*DispatchFn)(NetworkMsg * msg, int len);
+	static const DispatchFn table[] = {
+	    &NetworkProtocol::OnInvalid,       /* Invalid */
+	    &NetworkProtocol::OnSyncRequest,   /* SyncRequest */
+	    &NetworkProtocol::OnSyncReply,     /* SyncReply */
+	    &NetworkProtocol::OnInput,         /* Input */
+	    &NetworkProtocol::OnQualityReport, /* QualityReport */
+	    &NetworkProtocol::OnQualityReply,  /* QualityReply */
+	    &NetworkProtocol::OnKeepAlive,     /* KeepAlive */
+	    &NetworkProtocol::OnInputAck,      /* InputAck */
+	};
 
-   if (_stats_start_time == 0) {
-      _stats_start_time = now;
-   }
+	// filter out messages that don't match what we expect
+	int seq = msg->hdr.sequence_number;
+	if (msg->hdr.type != NetworkMsg::SyncRequest &&
+	    msg->hdr.type != NetworkMsg::SyncReply) {
+		if (msg->hdr.magic != _remote_magic_number) {
+			LogMsg("recv rejecting", msg);
+			return;
+		}
 
-   int total_bytes_sent = _bytes_sent + (UDP_HEADER_SIZE * _packets_sent);
-   float seconds = (float)((now - _stats_start_time) / 1000.0);
-   float Bps = total_bytes_sent / seconds;
-   float udp_overhead = (float)(100.0 * (UDP_HEADER_SIZE * _packets_sent) / _bytes_sent);
+		// filter out out-of-order packets
+		uint16 skipped = seq - _next_recv_seq;
+		// Log("checking sequence number -> next - seq : %d - %d = %d\n", seq,
+		// _next_recv_seq, skipped);
+		if (skipped > MAX_SEQ_DISTANCE) {
+			Log("dropping out of order packet (seq: %d, last seq:%d)\n",
+			    seq,
+			    _next_recv_seq);
+			return;
+		}
+	}
 
-   _kbps_sent = int(Bps / 1024);
-
-   Log("Network Stats -- Bandwidth: %.2f KBps   Packets Sent: %5d (%.2f pps)   "
-       "KB Sent: %.2f    UDP Overhead: %.2f %%.\n",
-       _kbps_sent, 
-       _packets_sent,
-       (float)_packets_sent * 1000 / (now - _stats_start_time),
-       total_bytes_sent / 1024.0,
-       udp_overhead);
+	_next_recv_seq = seq;
+	LogMsg("recv", msg);
+	if (msg->hdr.type >= ARRAY_SIZE(table)) {
+		OnInvalid(msg, len);
+	}
+	else {
+		handled = (this->*(table[msg->hdr.type]))(msg, len);
+	}
+	if (handled) {
+		_last_recv_time = Platform::GetCurrentTimeMS();
+		if (_disconnect_notify_sent && _current_state == Running) {
+			QueueEvent(Event(Event::NetworkResumed));
+			_disconnect_notify_sent = false;
+		}
+	}
 }
 
-
-void
-NetworkProtocol::QueueEvent(const NetworkProtocol::Event &evt)
+void NetworkProtocol::UpdateNetworkStats(void)
 {
-   LogEvent("Queuing event", evt);
-   _event_queue.push(evt);
+	int now = Platform::GetCurrentTimeMS();
+
+	if (_stats_start_time == 0) {
+		_stats_start_time = now;
+	}
+
+	int total_bytes_sent = _bytes_sent + (UDP_HEADER_SIZE * _packets_sent);
+	float seconds = (float)((now - _stats_start_time) / 1000.0);
+	float Bps = total_bytes_sent / seconds;
+	float udp_overhead =
+	    (float)(100.0 * (UDP_HEADER_SIZE * _packets_sent) / _bytes_sent);
+
+	_kbps_sent = int(Bps / 1024);
+
+	Log("Network Stats -- Bandwidth: %.2f KBps   Packets Sent: %5d (%.2f pps)  "
+	    " "
+	    "KB Sent: %.2f    UDP Overhead: %.2f %%.\n",
+	    _kbps_sent,
+	    _packets_sent,
+	    (float)_packets_sent * 1000 / (now - _stats_start_time),
+	    total_bytes_sent / 1024.0,
+	    udp_overhead);
 }
 
-void
-NetworkProtocol::Synchronize()
+void NetworkProtocol::QueueEvent(const NetworkProtocol::Event &evt)
 {
-   if (_network) {
-      _current_state = Syncing;
-      _state.sync.roundtrips_remaining = NUM_SYNC_PACKETS;
-      SendSyncRequest();
-   }
+	LogEvent("Queuing event", evt);
+	_event_queue.push(evt);
 }
 
-bool
-NetworkProtocol::GetPeerConnectStatus(int id, int *frame)
+void NetworkProtocol::Synchronize()
 {
-   *frame = _peer_connect_status[id].last_frame;
-   return !_peer_connect_status[id].disconnected;
+	if (_network) {
+		_current_state = Syncing;
+		_state.sync.roundtrips_remaining = NUM_SYNC_PACKETS;
+		SendSyncRequest();
+	}
 }
 
-void
-NetworkProtocol::Log(const char *fmt, ...)
+bool NetworkProtocol::GetPeerConnectStatus(int id, int *frame)
 {
-   char buf[1024];
-   size_t offset;
-   va_list args;
-
-   sprintf(buf, "udpproto%d | ", _queue);
-   offset = strlen(buf);
-   va_start(args, fmt);
-   vsnprintf(buf + offset, ARRAY_SIZE(buf) - offset - 1, fmt, args);
-   buf[ARRAY_SIZE(buf)-1] = '\0';
-   ::Log(buf);
-   va_end(args);
+	*frame = _peer_connect_status[id].last_frame;
+	return !_peer_connect_status[id].disconnected;
 }
 
-void
-NetworkProtocol::LogMsg(const char *prefix, NetworkMsg *msg)
+void NetworkProtocol::Log(const char *fmt, ...)
 {
-   switch (msg->hdr.type) {
-   case NetworkMsg::SyncRequest:
-      Log("%s sync-request (%d).\n", prefix,
-          msg->u.sync_request.random_request);
-      break;
-   case NetworkMsg::SyncReply:
-      Log("%s sync-reply (%d).\n", prefix,
-          msg->u.sync_reply.random_reply);
-      break;
-   case NetworkMsg::QualityReport:
-      Log("%s quality report.\n", prefix);
-      break;
-   case NetworkMsg::QualityReply:
-      Log("%s quality reply.\n", prefix);
-      break;
-   case NetworkMsg::KeepAlive:
-      Log("%s keep alive.\n", prefix);
-      break;
-   case NetworkMsg::Input:
-      Log("%s game-compressed-input %d (+ %d bits).\n", prefix, msg->u.input.start_frame, msg->u.input.num_bits);
-      break;
-   case NetworkMsg::InputAck:
-      Log("%s input ack.\n", prefix);
-      break;
-   default:
-      ASSERT(FALSE && "Unknown NetworkMsg type.");
-   }
+	char buf[1024];
+	size_t offset;
+	va_list args;
+
+	sprintf(buf, "udpproto%d | ", _queue);
+	offset = strlen(buf);
+	va_start(args, fmt);
+	vsnprintf(buf + offset, ARRAY_SIZE(buf) - offset - 1, fmt, args);
+	buf[ARRAY_SIZE(buf) - 1] = '\0';
+	::Log(buf);
+	va_end(args);
 }
 
-void
-NetworkProtocol::LogEvent(const char *prefix, const NetworkProtocol::Event &evt)
+void NetworkProtocol::LogMsg(const char *prefix, NetworkMsg *msg)
 {
-   switch (evt.type) {
-   case NetworkProtocol::Event::Synchronzied:
-      Log("%s (event: Synchronzied).\n", prefix);
-      break;
-   }
+	switch (msg->hdr.type) {
+		case NetworkMsg::SyncRequest:
+			Log("%s sync-request (%d).\n",
+			    prefix,
+			    msg->u.sync_request.random_request);
+			break;
+		case NetworkMsg::SyncReply:
+			Log("%s sync-reply (%d).\n",
+			    prefix,
+			    msg->u.sync_reply.random_reply);
+			break;
+		case NetworkMsg::QualityReport:
+			Log("%s quality report.\n", prefix);
+			break;
+		case NetworkMsg::QualityReply:
+			Log("%s quality reply.\n", prefix);
+			break;
+		case NetworkMsg::KeepAlive:
+			Log("%s keep alive.\n", prefix);
+			break;
+		case NetworkMsg::Input:
+			Log("%s game-compressed-input %d (+ %d bits).\n",
+			    prefix,
+			    msg->u.input.start_frame,
+			    msg->u.input.num_bits);
+			break;
+		case NetworkMsg::InputAck:
+			Log("%s input ack.\n", prefix);
+			break;
+		default:
+			ASSERT(FALSE && "Unknown NetworkMsg type.");
+	}
 }
 
-bool
-NetworkProtocol::OnInvalid(NetworkMsg *msg, int len)
+void NetworkProtocol::LogEvent(
+    const char *prefix, const NetworkProtocol::Event &evt)
 {
-   ASSERT(FALSE && "Invalid msg in NetworkProtocol");
-   return false;
+	switch (evt.type) {
+		case NetworkProtocol::Event::Synchronzied:
+			Log("%s (event: Synchronzied).\n", prefix);
+			break;
+	}
 }
 
-bool
-NetworkProtocol::OnSyncRequest(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnInvalid(NetworkMsg *msg, int len)
 {
-   if (_remote_magic_number != 0 && msg->hdr.magic != _remote_magic_number) {
-      Log("Ignoring sync request from unknown endpoint (%d != %d).\n", 
-           msg->hdr.magic, _remote_magic_number);
-      return false;
-   }
-   NetworkMsg *reply = new NetworkMsg(NetworkMsg::SyncReply);
-   reply->u.sync_reply.random_reply = msg->u.sync_request.random_request;
-   SendMsg(reply);
-   return true;
+	ASSERT(FALSE && "Invalid msg in NetworkProtocol");
+	return false;
 }
 
-bool
-NetworkProtocol::OnSyncReply(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnSyncRequest(NetworkMsg *msg, int len)
 {
-   if (_current_state != Syncing) {
-      Log("Ignoring SyncReply while not synching.\n");
-      return msg->hdr.magic == _remote_magic_number;
-   }
-
-   if (msg->u.sync_reply.random_reply != _state.sync.random) {
-      Log("sync reply %d != %d.  Keep looking...\n",
-          msg->u.sync_reply.random_reply, _state.sync.random);
-      return false;
-   }
-
-   if (!_connected) {
-      QueueEvent(Event(Event::Connected));
-      _connected = true;
-   }
-
-   Log("Checking sync state (%d round trips remaining).\n", _state.sync.roundtrips_remaining);
-   if (--_state.sync.roundtrips_remaining == 0) {
-      Log("Synchronized!\n");
-      QueueEvent(NetworkProtocol::Event(NetworkProtocol::Event::Synchronzied));
-      _current_state = Running;
-      _last_received_input.frame = -1;
-      _remote_magic_number = msg->hdr.magic;
-   } else {
-      NetworkProtocol::Event evt(NetworkProtocol::Event::Synchronizing);
-      evt.u.synchronizing.total = NUM_SYNC_PACKETS;
-      evt.u.synchronizing.count = NUM_SYNC_PACKETS - _state.sync.roundtrips_remaining;
-      QueueEvent(evt);
-      SendSyncRequest();
-   }
-   return true;
+	if (_remote_magic_number != 0 && msg->hdr.magic != _remote_magic_number) {
+		Log("Ignoring sync request from unknown endpoint (%d != %d).\n",
+		    msg->hdr.magic,
+		    _remote_magic_number);
+		return false;
+	}
+	NetworkMsg *reply = new NetworkMsg(NetworkMsg::SyncReply);
+	reply->u.sync_reply.random_reply = msg->u.sync_request.random_request;
+	SendMsg(reply);
+	return true;
 }
 
-bool
-NetworkProtocol::OnInput(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnSyncReply(NetworkMsg *msg, int len)
 {
-   /*
-    * If a disconnect is requested, go ahead and disconnect now.
-    */
-   bool disconnect_requested = msg->u.input.disconnect_requested;
-   if (disconnect_requested) {
-      if (_current_state != Disconnected && !_disconnect_event_sent) {
-         Log("Disconnecting endpoint on remote request.\n");
-         QueueEvent(Event(Event::Disconnected));
-         _disconnect_event_sent = true;
-      }
-   } else {
-      /*
-       * Update the peer connection status if this peer is still considered to be part
-       * of the network.
-       */
-      NetworkMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
-      for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
-         ASSERT(remote_status[i].last_frame >= _peer_connect_status[i].last_frame);
-         _peer_connect_status[i].disconnected = _peer_connect_status[i].disconnected || remote_status[i].disconnected;
-         _peer_connect_status[i].last_frame = MAX(_peer_connect_status[i].last_frame, remote_status[i].last_frame);
-      }
-   }
+	if (_current_state != Syncing) {
+		Log("Ignoring SyncReply while not synching.\n");
+		return msg->hdr.magic == _remote_magic_number;
+	}
 
-   /*
-    * Decompress the input.
-    */
-   int last_received_frame_number = _last_received_input.frame;
-   if (msg->u.input.num_bits) {
-      int offset = 0;
-      uint8 *bits = (uint8 *)msg->u.input.bits;
-      int numBits = msg->u.input.num_bits;
-      int currentFrame = msg->u.input.start_frame;
+	if (msg->u.sync_reply.random_reply != _state.sync.random) {
+		Log("sync reply %d != %d.  Keep looking...\n",
+		    msg->u.sync_reply.random_reply,
+		    _state.sync.random);
+		return false;
+	}
 
-      _last_received_input.size = msg->u.input.input_size;
-      if (_last_received_input.frame < 0) {
-         _last_received_input.frame = msg->u.input.start_frame - 1;
-      }
-      while (offset < numBits) {
-         /*
-          * Keep walking through the frames (parsing bits) until we reach
-          * the inputs for the frame right after the one we're on.
-          */
-         ASSERT(currentFrame <= (_last_received_input.frame + 1));
-         bool useInputs = currentFrame == _last_received_input.frame + 1;
+	if (!_connected) {
+		QueueEvent(Event(Event::Connected));
+		_connected = true;
+	}
 
-         while (BitVector_ReadBit(bits, &offset)) {
-            int on = BitVector_ReadBit(bits, &offset);
-            int button = BitVector_ReadNibblet(bits, &offset);
-            if (useInputs) {
-               if (on) {
-                  _last_received_input.set(button);
-               } else {
-                  _last_received_input.clear(button);
-               }
-            }
-         }
-         ASSERT(offset <= numBits);
-
-         /*
-          * Now if we want to use these inputs, go ahead and send them to
-          * the emulator.
-          */
-         if (useInputs) {
-            /*
-             * Move forward 1 frame in the stream.
-             */
-            char desc[1024];
-            ASSERT(currentFrame == _last_received_input.frame + 1);
-            _last_received_input.frame = currentFrame;
-
-            /*
-             * Send the event to the emualtor
-             */
-            NetworkProtocol::Event evt(NetworkProtocol::Event::Input);
-            evt.u.input.input = _last_received_input;
-
-            _last_received_input.desc(desc);
-
-            _state.running.last_input_packet_recv_time = Platform::GetCurrentTimeMS();
-
-            Log("Sending frame %d to emu queue %d (%s).\n", _last_received_input.frame, _queue, desc);
-            QueueEvent(evt);
-
-         } else {
-            Log("Skipping past frame:(%d) current is %d.\n", currentFrame, _last_received_input.frame);
-         }
-
-         /*
-          * Move forward 1 frame in the input stream.
-          */
-         currentFrame++;
-      }
-   }
-   ASSERT(_last_received_input.frame >= last_received_frame_number);
-
-   /*
-    * Get rid of our buffered input
-    */
-   while (_pending_output.size() && _pending_output.front().frame < msg->u.input.ack_frame) {
-      Log("Throwing away pending output frame %d\n", _pending_output.front().frame);
-      _last_acked_input = _pending_output.front();
-      _pending_output.pop();
-   }
-   return true;
+	Log("Checking sync state (%d round trips remaining).\n",
+	    _state.sync.roundtrips_remaining);
+	if (--_state.sync.roundtrips_remaining == 0) {
+		Log("Synchronized!\n");
+		QueueEvent(
+		    NetworkProtocol::Event(NetworkProtocol::Event::Synchronzied));
+		_current_state = Running;
+		_last_received_input.frame = -1;
+		_remote_magic_number = msg->hdr.magic;
+	}
+	else {
+		NetworkProtocol::Event evt(NetworkProtocol::Event::Synchronizing);
+		evt.u.synchronizing.total = NUM_SYNC_PACKETS;
+		evt.u.synchronizing.count =
+		    NUM_SYNC_PACKETS - _state.sync.roundtrips_remaining;
+		QueueEvent(evt);
+		SendSyncRequest();
+	}
+	return true;
 }
 
-
-bool
-NetworkProtocol::OnInputAck(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnInput(NetworkMsg *msg, int len)
 {
-   /*
-    * Get rid of our buffered input
-    */
-   while (_pending_output.size() && _pending_output.front().frame < msg->u.input_ack.ack_frame) {
-      Log("Throwing away pending output frame %d\n", _pending_output.front().frame);
-      _last_acked_input = _pending_output.front();
-      _pending_output.pop();
-   }
-   return true;
+	/*
+	 * If a disconnect is requested, go ahead and disconnect now.
+	 */
+	bool disconnect_requested = msg->u.input.disconnect_requested;
+	if (disconnect_requested) {
+		if (_current_state != Disconnected && !_disconnect_event_sent) {
+			Log("Disconnecting endpoint on remote request.\n");
+			QueueEvent(Event(Event::Disconnected));
+			_disconnect_event_sent = true;
+		}
+	}
+	else {
+		/*
+		 * Update the peer connection status if this peer is still considered to
+		 * be part of the network.
+		 */
+		NetworkMsg::connect_status *remote_status =
+		    msg->u.input.peer_connect_status;
+		for (int i = 0; i < ARRAY_SIZE(_peer_connect_status); i++) {
+			ASSERT(remote_status[i].last_frame >=
+			       _peer_connect_status[i].last_frame);
+			_peer_connect_status[i].disconnected =
+			    _peer_connect_status[i].disconnected ||
+			    remote_status[i].disconnected;
+			_peer_connect_status[i].last_frame =
+			    MAX(_peer_connect_status[i].last_frame,
+			        remote_status[i].last_frame);
+		}
+	}
+
+	/*
+	 * Decompress the input.
+	 */
+	int last_received_frame_number = _last_received_input.frame;
+	if (msg->u.input.num_bits) {
+		int offset = 0;
+		uint8 *bits = (uint8 *)msg->u.input.bits;
+		int numBits = msg->u.input.num_bits;
+		int currentFrame = msg->u.input.start_frame;
+
+		_last_received_input.size = msg->u.input.input_size;
+		if (_last_received_input.frame < 0) {
+			_last_received_input.frame = msg->u.input.start_frame - 1;
+		}
+		while (offset < numBits) {
+			/*
+			 * Keep walking through the frames (parsing bits) until we reach
+			 * the inputs for the frame right after the one we're on.
+			 */
+			ASSERT(currentFrame <= (_last_received_input.frame + 1));
+			bool useInputs = currentFrame == _last_received_input.frame + 1;
+
+			while (BitVector_ReadBit(bits, &offset)) {
+				int on = BitVector_ReadBit(bits, &offset);
+				int button = BitVector_ReadNibblet(bits, &offset);
+				if (useInputs) {
+					if (on) {
+						_last_received_input.set(button);
+					}
+					else {
+						_last_received_input.clear(button);
+					}
+				}
+			}
+			ASSERT(offset <= numBits);
+
+			/*
+			 * Now if we want to use these inputs, go ahead and send them to
+			 * the emulator.
+			 */
+			if (useInputs) {
+				/*
+				 * Move forward 1 frame in the stream.
+				 */
+				char desc[1024];
+				ASSERT(currentFrame == _last_received_input.frame + 1);
+				_last_received_input.frame = currentFrame;
+
+				/*
+				 * Send the event to the emualtor
+				 */
+				NetworkProtocol::Event evt(NetworkProtocol::Event::Input);
+				evt.u.input.input = _last_received_input;
+
+				_last_received_input.desc(desc);
+
+				_state.running.last_input_packet_recv_time =
+				    Platform::GetCurrentTimeMS();
+
+				Log("Sending frame %d to emu queue %d (%s).\n",
+				    _last_received_input.frame,
+				    _queue,
+				    desc);
+				QueueEvent(evt);
+			}
+			else {
+				Log("Skipping past frame:(%d) current is %d.\n",
+				    currentFrame,
+				    _last_received_input.frame);
+			}
+
+			/*
+			 * Move forward 1 frame in the input stream.
+			 */
+			currentFrame++;
+		}
+	}
+	ASSERT(_last_received_input.frame >= last_received_frame_number);
+
+	/*
+	 * Get rid of our buffered input
+	 */
+	while (_pending_output.size() &&
+	       _pending_output.front().frame < msg->u.input.ack_frame) {
+		Log("Throwing away pending output frame %d\n",
+		    _pending_output.front().frame);
+		_last_acked_input = _pending_output.front();
+		_pending_output.pop();
+	}
+	return true;
 }
 
-bool
-NetworkProtocol::OnQualityReport(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnInputAck(NetworkMsg *msg, int len)
 {
-   // send a reply so the other side can compute the round trip transmit time.
-   NetworkMsg *reply = new NetworkMsg(NetworkMsg::QualityReply);
-   reply->u.quality_reply.pong = msg->u.quality_report.ping;
-   SendMsg(reply);
-
-   _remote_frame_advantage = msg->u.quality_report.frame_advantage;
-   return true;
+	/*
+	 * Get rid of our buffered input
+	 */
+	while (_pending_output.size() &&
+	       _pending_output.front().frame < msg->u.input_ack.ack_frame) {
+		Log("Throwing away pending output frame %d\n",
+		    _pending_output.front().frame);
+		_last_acked_input = _pending_output.front();
+		_pending_output.pop();
+	}
+	return true;
 }
 
-bool
-NetworkProtocol::OnQualityReply(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnQualityReport(NetworkMsg *msg, int len)
 {
-   _round_trip_time = Platform::GetCurrentTimeMS() - msg->u.quality_reply.pong;
-   return true;
+	// send a reply so the other side can compute the round trip transmit time.
+	NetworkMsg *reply = new NetworkMsg(NetworkMsg::QualityReply);
+	reply->u.quality_reply.pong = msg->u.quality_report.ping;
+	SendMsg(reply);
+
+	_remote_frame_advantage = msg->u.quality_report.frame_advantage;
+	return true;
 }
 
-bool
-NetworkProtocol::OnKeepAlive(NetworkMsg *msg, int len)
+bool NetworkProtocol::OnQualityReply(NetworkMsg *msg, int len)
 {
-   return true;
+	_round_trip_time = Platform::GetCurrentTimeMS() - msg->u.quality_reply.pong;
+	return true;
 }
 
-void
-NetworkProtocol::GetNetworkStats(struct GGPONetworkStats *s)
+bool NetworkProtocol::OnKeepAlive(NetworkMsg *msg, int len)
 {
-   s->network.ping = _round_trip_time;
-   s->network.send_queue_len = _pending_output.size();
-   s->network.kbps_sent = _kbps_sent;
-   s->timesync.remote_frames_behind = _remote_frame_advantage;
-   s->timesync.local_frames_behind = _local_frame_advantage;
+	return true;
 }
 
-void
-NetworkProtocol::SetLocalFrameNumber(int localFrame)
+void NetworkProtocol::GetNetworkStats(struct GGPONetworkStats *s)
 {
-   /*
-    * Estimate which frame the other guy is one by looking at the
-    * last frame they gave us plus some delta for the one-way packet
-    * trip time.
-    */
-   /// TODO(Roelof): This seems to imply a fixed 60fps framerate, is this an 
-   /// issue and can we make it at least settable from outside the library?.
-   int remoteFrame = _last_received_input.frame + (_round_trip_time * 60 / 1000);
-
-   /*
-    * Our frame advantage is how many frames *behind* the other guy
-    * we are.  Counter-intuative, I know.  It's an advantage because
-    * it means they'll have to predict more often and our moves will
-    * pop more frequenetly.
-    */
-   _local_frame_advantage = remoteFrame - localFrame;
+	s->network.ping = _round_trip_time;
+	s->network.send_queue_len = _pending_output.size();
+	s->network.kbps_sent = _kbps_sent;
+	s->timesync.remote_frames_behind = _remote_frame_advantage;
+	s->timesync.local_frames_behind = _local_frame_advantage;
 }
 
-int
-NetworkProtocol::RecommendFrameDelay()
+void NetworkProtocol::SetLocalFrameNumber(int localFrame)
 {
-   // XXX: require idle input should be a configuration parameter
-   return _timesync.recommend_frame_wait_duration(false);
+	/*
+	 * Estimate which frame the other guy is one by looking at the
+	 * last frame they gave us plus some delta for the one-way packet
+	 * trip time.
+	 */
+	/// TODO(Roelof): This seems to imply a fixed 60fps framerate, is this an
+	/// issue and can we make it at least settable from outside the library?.
+	int remoteFrame =
+	    _last_received_input.frame + (_round_trip_time * 60 / 1000);
+
+	/*
+	 * Our frame advantage is how many frames *behind* the other guy
+	 * we are.  Counter-intuative, I know.  It's an advantage because
+	 * it means they'll have to predict more often and our moves will
+	 * pop more frequenetly.
+	 */
+	_local_frame_advantage = remoteFrame - localFrame;
 }
 
-
-void
-NetworkProtocol::SetDisconnectTimeout(int timeout)
+int NetworkProtocol::RecommendFrameDelay()
 {
-   _disconnect_timeout = timeout;
+	// XXX: require idle input should be a configuration parameter
+	return _timesync.recommend_frame_wait_duration(false);
 }
 
-void
-NetworkProtocol::SetDisconnectNotifyStart(int timeout)
+void NetworkProtocol::SetDisconnectTimeout(int timeout)
 {
-   _disconnect_notify_start = timeout;
+	_disconnect_timeout = timeout;
 }
 
-void
-NetworkProtocol::PumpSendQueue()
+void NetworkProtocol::SetDisconnectNotifyStart(int timeout)
 {
-   while (!_send_queue.empty()) {
-      QueueEntry &entry = _send_queue.front();
-
-      if (_send_latency) {
-         // should really come up with a gaussian distributation based on the configured
-         // value, but this will do for now.
-         int jitter = (_send_latency * 2 / 3) + ((rand() % _send_latency) / 3);
-         if (Platform::GetCurrentTimeMS() < _send_queue.front().queue_time + jitter) {
-            break;
-         }
-      }
-      if (_oop_percent && !_oo_packet.msg && ((rand() % 100) < _oop_percent)) {
-         int delay = rand() % (_send_latency * 10 + 1000);
-         Log("creating rogue oop (seq: %d  delay: %d)\n", entry.msg->hdr.sequence_number, delay);
-         _oo_packet.send_time = Platform::GetCurrentTimeMS() + delay;
-         _oo_packet.msg = entry.msg;
-         _oo_packet.dest_addr = entry.dest_addr;
-      } else {
-         _network->SendTo((char *)entry.msg, entry.msg->PacketSize(), 0,
-          entry.dest_addr, sizeof entry.dest_addr);
-
-         delete entry.msg;
-      }
-      _send_queue.pop();
-   }
-   if (_oo_packet.msg && _oo_packet.send_time < Platform::GetCurrentTimeMS()) {
-      Log("sending rogue oop!");
-      _network->SendTo((char *)_oo_packet.msg, _oo_packet.msg->PacketSize(), 0,
-                     _oo_packet.dest_addr, sizeof _oo_packet.dest_addr);
-
-      delete _oo_packet.msg;
-      _oo_packet.msg = NULL;
-   }
+	_disconnect_notify_start = timeout;
 }
 
-void
-NetworkProtocol::ClearSendQueue()
+void NetworkProtocol::PumpSendQueue()
 {
-   while (!_send_queue.empty()) {
-      delete _send_queue.front().msg;
-      _send_queue.pop();
-   }
+	while (!_send_queue.empty()) {
+		QueueEntry &entry = _send_queue.front();
+
+		if (_send_latency) {
+			// should really come up with a gaussian distributation based on the
+			// configured value, but this will do for now.
+			int jitter =
+			    (_send_latency * 2 / 3) + ((rand() % _send_latency) / 3);
+			if (Platform::GetCurrentTimeMS() <
+			    _send_queue.front().queue_time + jitter) {
+				break;
+			}
+		}
+		if (_oop_percent && !_oo_packet.msg &&
+		    ((rand() % 100) < _oop_percent)) {
+			int delay = rand() % (_send_latency * 10 + 1000);
+			Log("creating rogue oop (seq: %d  delay: %d)\n",
+			    entry.msg->hdr.sequence_number,
+			    delay);
+			_oo_packet.send_time = Platform::GetCurrentTimeMS() + delay;
+			_oo_packet.msg = entry.msg;
+			_oo_packet.dest_addr = entry.dest_addr;
+		}
+		else {
+			_network->SendTo((char *)entry.msg,
+			    entry.msg->PacketSize(),
+			    0,
+			    entry.dest_addr,
+			    sizeof entry.dest_addr);
+
+			delete entry.msg;
+		}
+		_send_queue.pop();
+	}
+	if (_oo_packet.msg && _oo_packet.send_time < Platform::GetCurrentTimeMS()) {
+		Log("sending rogue oop!");
+		_network->SendTo((char *)_oo_packet.msg,
+		    _oo_packet.msg->PacketSize(),
+		    0,
+		    _oo_packet.dest_addr,
+		    sizeof _oo_packet.dest_addr);
+
+		delete _oo_packet.msg;
+		_oo_packet.msg = NULL;
+	}
+}
+
+void NetworkProtocol::ClearSendQueue()
+{
+	while (!_send_queue.empty()) {
+		delete _send_queue.front().msg;
+		_send_queue.pop();
+	}
 }

@@ -18,9 +18,10 @@
  *   4127 - conditional expression is constant
  *   4201 - nonstandard extension used : nameless struct/union
  *   4389 - '!=' : signed/unsigned mismatch
- *   4800 - 'int' : forcing value to bool 'true' or 'false' (performance warning)
+ *   4800 - 'int' : forcing value to bool 'true' or 'false' (performance
+ * warning)
  */
-#pragma warning(disable: 4018 4100 4127 4201 4389 4800)
+#pragma warning(disable : 4018 4100 4127 4201 4389 4800)
 
 /*
  * Simple types
@@ -37,48 +38,52 @@ typedef int int32;
  * Additional headers
  */
 #if defined(_WINDOWS)
-#  include "platform_windows.h"
+	#include "platform_windows.h"
 #elif defined(__APPLE__) or defined(__GNUC__)
-#  include "platform_unix.h"
+	#include "platform_unix.h"
 #else
-#  error Unsupported platform
+	#error Unsupported platform
 #endif
 
 #include "log.h"
 
-
-
 /*
  * Macros
  */
-#define ASSERT(x)                                           \
-   do {                                                     \
-      if (!(x)) {                                           \
-         char buf[1024];                                    \
-         snprintf(buf, sizeof(buf) - 1, "Assertion: %s @ %s:%d (pid:%d)", #x, __FILE__, __LINE__, Platform::GetProcessID()); \
-         Log("%s\n", buf);                                  \
-         Log("\n");                                         \
-         Log("\n");                                         \
-         Log("\n");                                         \
-         Platform::AssertFailed(buf);                       \
-         exit(0);                                           \
-      }                                                     \
-   } while (false)
+#define ASSERT(x)                                 \
+	do {                                          \
+		if (!(x)) {                               \
+			char buf[1024];                       \
+			snprintf(buf,                         \
+			    sizeof(buf) - 1,                  \
+			    "Assertion: %s @ %s:%d (pid:%d)", \
+			    #x,                               \
+			    __FILE__,                         \
+			    __LINE__,                         \
+			    Platform::GetProcessID());        \
+			Log("%s\n", buf);                     \
+			Log("\n");                            \
+			Log("\n");                            \
+			Log("\n");                            \
+			Platform::AssertFailed(buf);          \
+			exit(0);                              \
+		}                                         \
+	} while (false)
 
 #ifndef ARRAY_SIZE
-#  define ARRAY_SIZE(a)    (sizeof(a) / sizeof((a)[0]))
+	#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #endif
 
 #ifndef MAX_INT
-#  define MAX_INT          0xEFFFFFF
+	#define MAX_INT 0xEFFFFFF
 #endif
 
 #ifndef MAX
-#  define MAX(x, y)        (((x) > (y)) ? (x) : (y))
+	#define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #endif
 
 #ifndef MIN
-#  define MIN(x, y)        (((x) < (y)) ? (x) : (y))
+	#define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #endif
 
 #endif // _TYPES_H

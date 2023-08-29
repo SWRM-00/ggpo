@@ -7,9 +7,8 @@
 
 #include "platform_windows.h"
 
-BOOL WINAPI
-DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
-   srand(Platform::GetCurrentTimeMS() + Platform::GetProcessID());
-   return TRUE;
+	srand(Platform::GetCurrentTimeMS() + Platform::GetProcessID());
+	return TRUE;
 }
