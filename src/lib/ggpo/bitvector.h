@@ -10,7 +10,7 @@
 
 #include <types.h>
 
-#define BITVECTOR_NIBBLE_SIZE 8
+#define BITVECTOR_NIBBLE_SIZE 9
 
 void BitVector_SetBit(uint8 *vector, int *offset);
 void BitVector_ClearBit(uint8 *vector, int *offset);

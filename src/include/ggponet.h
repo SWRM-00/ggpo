@@ -74,7 +74,7 @@ typedef enum {
  * application and as such only require a pointer size.
  */
 typedef uint64_t GGPOConnectionPlayerID;
-#ifdef _DEBUG
+#if defined(_DEBUG) && !defined(__cplusplus)
 	#include <assert.h>
 static inline void __check_ptr_size()
 {
@@ -112,6 +112,7 @@ typedef struct GGPOPlayer {
 	int player_num;
 	union {
 		struct {
+			int _pad;
 		} local;
 		struct {
 			GGPOConnectionPlayerID player_id;
@@ -342,7 +343,6 @@ typedef struct GGPOConnectionCallbacks {
 
 	/*
 	 * send_message must send a message in a given buffer to a given oponent.
-	 * TODO: Actual function pointer.
 	 */
 	void(__cdecl *send_message)(const char *buffer,
 	    int buffer_len,
@@ -354,7 +354,6 @@ typedef struct GGPOConnectionCallbacks {
 	 * poll_message must check if there are any incoming messages and if there
 	 * are, it must fill the pointers and return the size of the incoming
 	 * message.
-	 * TODO: Actual function pointer.
 	 */
 	int(__cdecl *poll_message)(char *buffer,
 	    int buffer_max_len,
