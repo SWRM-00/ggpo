@@ -74,7 +74,7 @@ typedef enum {
  * application and as such only require a pointer size.
  */
 typedef uint64_t GGPOConnectionPlayerID;
-#if 0 && defined(_DEBUG) && !defined(__cplusplus) && defined(WIN32)
+#if defined(_DEBUG) && !defined(__cplusplus) && defined(WIN32)
 	#include <assert.h>
 static inline void __check_ptr_size()
 {
